@@ -204,26 +204,27 @@ tcat(t::Tuple) = t
 tcat(t::Tuple, tups::Tuple...) = (t..., tcat(tups...)...)
 
 # Indexing tuples with tuples
-getindex(t::Tuple, ind::Tuple{}) = ()
-getindex(t::Tuple, ind::Tuple{Integer}) = (t[ind[1]],)
-getindex(t::Tuple, ind::Tuple{Integer,Integer}) = (t[ind[1]], t[ind[2]])
-getindex(t::Tuple, ind::Tuple{Integer,Integer,Integer}) = (t[ind[1]], t[ind[2]], t[ind[3]])
-# Defining this method kills type inference...
-getindex(t::Tuple, ind::Tuple{Vararg{Integer}}) = map(i->t[i], ind)
-# This should be more inferrable than the one above, but it seems to behave exactly the same
-# function getindex(t::Tuple, ind::Tuple{Vararg{Integer,N}}) where {N}
-# 	a = MVector{N,eltype(t)}(undef)
-# 	for i = 1:N
-# 		@inbounds a[i] = t[ind[i]]
-# 	end
-# 	#(a...,)
-# 	Tuple(a)
-# end
-#
-#getindex(t::Tuple, ind::Tuple{Vararg{Integer,N}}) where {N} = ntuple(i->t[ind[i]], N)
-#getindex(t::Tuple, ind::Tuple{Vararg{Integer}}) = (t[ind[1]], t[tail(ind)]...)
+getindex(t::Tuple, i::Tuple{}) = ()
+getindex(t::Tuple, i::Tuple{Integer}) = (t[i[1]],)
+getindex(t::Tuple, i::Tuple{Integer,Integer}) = (t[i[1]], t[i[2]])
+getindex(t::Tuple, i::Tuple{Integer,Integer,Integer}) = (t[i[1]], t[i[2]], t[i[3]])
+getindex(t::Tuple, i::Tuple{Integer,Integer,Integer,Integer}) = (t[i[1]], t[i[2]], t[i[3]], t[i[4]])
+# On Julia 1.4, this is slow for length(inds) > 15
+getindex(t::Tuple, inds::Tuple{Vararg{Integer}}) = map(i->t[i], inds)
 
-#to_index(I::Tuple{Vararg{Integer}}) = I
+const ManyIntegers = Tuple{Integer, Integer, Integer, Integer, Integer,
+									Integer, Integer, Integer, Integer, Vararg{Integer}}
+
+# Fast version for larger, uniformly-typed tuples
+function getindex(t::Tuple{Vararg{T}}, inds::ManyIntegers) where {T}
+	N = length(inds)
+	r = MVector{N,T}(undef)
+	for i in 1:N
+		r[i] = @inbounds t[inds[i]]
+	end
+	Tuple(r)
+end
+
 
 # Logical indexing of tuples
 # We have to have to separate methods to take precedence over specific methods in Base.
