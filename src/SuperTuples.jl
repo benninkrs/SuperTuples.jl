@@ -1,16 +1,14 @@
 # Additions/extensions to Julia that I (RSB) like
 module SuperTuples
 
-export oneto, tupseq, tupseqd, filltup, invpermute, select, antiselect, findin, tcat
+export oneto, tupseq, tupseqd, filltup, invpermute, firsttrue, findin, tcat
 
 using StaticArrays
 import Base: getindex, setindex!
-import Base: ntuple, invperm, sort, sortperm, in, allunique, (+), (-), (*)
+import Base: ntuple, invperm, sort, sortperm
 import Base.Iterators.take
 
 
-# # Extract length of a tuple type
-# length(::Type{T}) where {T<:NTuple{N}} where {N} = N
 
 # Tuple constructors
 
@@ -102,8 +100,11 @@ end
 
 
 """
-``oneto(n::Integer)``
-Construct the tuple `(1,2,...,n)``.
+	oneto(n::Integer)
+	oneto(::Val{n})
+
+Construct the tuple `(1,2,...,n)`.  When `n` is inferrable the constructions above
+usually leads to faster code than `1:n` or `Base.OneTo(n)`.  But when `n` is not inferrable, the latter constructions are preferred.
 """
 oneto(n::T) where {T<:Integer} = ntuple(identity, n, T)
 # When N can be inferred, the following are compile-time generated.
@@ -212,10 +213,9 @@ getindex(t::Tuple, i::Tuple{Integer,Integer,Integer,Integer}) = (t[i[1]], t[i[2]
 # On Julia 1.4, this is slow for length(inds) > 15
 getindex(t::Tuple, inds::Tuple{Vararg{Integer}}) = map(i->t[i], inds)
 
+# A faster version for larger, uniformly-typed tuples
 const ManyIntegers = Tuple{Integer, Integer, Integer, Integer, Integer,
 									Integer, Integer, Integer, Integer, Vararg{Integer}}
-
-# Fast version for larger, uniformly-typed tuples
 function getindex(t::Tuple{Vararg{T}}, inds::ManyIntegers) where {T}
 	N = length(inds)
 	r = MVector{N,T}(undef)
@@ -360,16 +360,16 @@ end
 
 
 # This always returns a Bool. (missing counts as false)
-function in(v, t::NTuple)
-	i = 1
-	while i <= length(t)
-		if v == t[i]
-			return true
-		end
-		i += 1
-	end
-	false
-end
+# function in(v, t::NTuple)
+# 	i = 1
+# 	while i <= length(t)
+# 		if v == t[i]
+# 			return true
+# 		end
+# 		i += 1
+# 	end
+# 	false
+# end
 
 
 function findzero(t::Tuple)
@@ -387,7 +387,7 @@ function findzero(t::Tuple)
 
 end
 
-# TODO:  Use sorting when t and/or s are not small
+# Using sort is not advantageous for any reasonably-sized tuple
 """
 `findin(v, t::NTuple)` returns the index of `v` in `t`.
 If `t` contains `v` more than once, the first index is returned.
@@ -396,23 +396,21 @@ If `t` does not contain `v`, 0 is returned.
 `findin(s::NTuple, t::NTuple)` returns, for each element of `s`, the corresponding
 index in `t`.
 """
-findin(v, t::NTuple) = find(v .== t)
-# For some reason this is faster than map
-findin(s::NTuple, t::NTuple) = findin.(s, Ref(t))  # map(v->find(v .== t), s)
+findin(v, t::NTuple) = firsttrue(v .== t)
 
 
 
 """
 Type-stable variant of `findfirst`.
 
-`find(b)` returns the index of the first true element of `b`, or `firstindex(b)-1` if `b`
+`firsttrue(b)` returns the index of the first true element of `b`, or `firstindex(b)-1` if `b`
 has no true elements.  This method can be significantly faster than `findfirst` when
-the result is placed into a tuple or array.
+the result indexes a tuple or array.
 """
-function find(b)
+@inline function firsttrue(b)
 	i = firstindex(b)
-	while i <= lastindex(b)
-		if b[i]
+	@inbounds while i <= lastindex(b)
+	if b[i]
 			return i
 		end
 		i += 1
