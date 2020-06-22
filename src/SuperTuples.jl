@@ -1,10 +1,11 @@
 # Additions/extensions to Julia that I (RSB) like
 module SuperTuples
 
-export oneto, tupseq, tupseqd, filltup, invpermute, firsttrue, findin, deleteat, tcat
+export oneto, tupseq, tupseqd, filltup, invpermute, firsttrue, findin, tcat
 
 using StaticArrays
 using Base: tail
+import StaticArrays: deleteat
 import Base: getindex, setindex!
 import Base: ntuple, invperm, sort, sortperm
 import Base.Iterators.take
