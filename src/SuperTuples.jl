@@ -1,13 +1,13 @@
 # Additions/extensions to Julia that I (RSB) like
 module SuperTuples
 
-export oneto, tupseq, tupseqd, filltup, invpermute, firsttrue, findin, tcat
+export oneto, tupseq, tupseqd, filltup, invpermute, firsttrue, findin, deleteat, tcat
 
 using StaticArrays
+using Base: tail
 import Base: getindex, setindex!
 import Base: ntuple, invperm, sort, sortperm
 import Base.Iterators.take
-
 
 
 # Tuple constructors
@@ -309,7 +309,7 @@ end
 # Selects the elements of `t` at which `b` is `false`. (Equivalent to
 # `t[(!).(mask)]` but faster.)
 # """
-# function antiselect(t, b::Union{AbstractArray{Bool}, Tuple{Vararg{Bool}}})
+# function deleteat(t, b::Union{AbstractArray{Bool}, Tuple{Vararg{Bool}}})
 # 	if length(b) == length(t)
 # 		r = t   # value doesn't matter, just need something the same size as t
 # 		ir = 0
@@ -330,25 +330,43 @@ end
 # end
 #
 #
-# """
-# `antiselect(t::Tuple, I::AbstractArray{Integer})` Selects the elements of `t` whose
-# indices are not in `I`.
-#
-# This version of `antiselect` internally constructs a logical array.  If such an array is
-# already available, using that will be faster.
-# """
-# function antiselect(t, I::Union{AbstractArray{Integer}, Tuple{Vararg{Integer}}})
-# 	b = MVector{length(t),Bool}(undef)
-# 	for i in 1:length(t)
-# 		b[i] = true
-# 	end
-# 	for i in I
-# 		b[i] = false
-# 	end
-# 	return t[b]
-# end
+"""
+	deleteat(t::Tuple, I::Integer)
+	deleteat(t::Tuple, I::Iterable{Integer})
+
+Selects the elements of `t` whose indices are not in `I`.
+(Logical indexing is generally faster if the logical array already exists).
+"""
+deleteat(t::Tuple, I::Tuple{Int}) = deleteat(t, I[1])
+function deleteat(t::Tuple, i::Int)
+    1 <= i <= length(t) || throw(BoundsError(t, i))
+	 length(t) <= 33 ? _deleteat(t, i) : _deleteat_long(t, i)
+ end
 
 
+function deleteat(t::Tuple, I::Tuple{Integer, Integer, Vararg{Integer}})
+    any(i->!(1 <= i <= length(t)), I) && throw(BoundsError(t, I))
+    length(t) <= 33 ?  _deleteat(t, sort(I, rev = true)) : _deleteat_long(t, sort(I, rev = true))
+end
+
+@inline _deleteat(t::Tuple, i::Int) = i == 1 ? tail(t) : (t[1], _deleteat(tail(t), i-1)...)
+
+@inline _deleteat(t::Tuple, I::Tuple{Integer}) = _deleteat(t, I[1])
+@inline _deleteat(t::Tuple, I::Tuple{Integer,Integer,Vararg{Integer}}) =
+    _deleteat(_deleteat(t, I[1]), tail(I)) # assumes sorted from big to small
+
+
+_deleteat_long(t::Tuple, I::Integer) = _deleteat_long(t, (I,))
+function _deleteat_long(t::Tuple, I::Union{AbstractArray{Integer}, Tuple{Vararg{Integer}}})
+	b = MVector{length(t),Bool}(undef)
+	for i in 1:length(t)
+		b[i] = true
+	end
+	for i in I
+		b[i] = false
+	end
+	return t[b]
+end
 
 # """
 # Tuple set difference (Not type stable).
@@ -419,23 +437,62 @@ the result indexes a tuple or array.
 end
 
 
+# If the tuple is short, using compiler-inferred merge sort.
+# Otherwise use quick sort with an MVector scratch space.
+# A switchpoint of length(t)==15 would actually be better, but for some reason
+# setting higher then 9 causes major performance hits for selected length tuples (even
+# though the called functions are individually fast).
+sort(t::Tuple; lt=isless, by=identity, rev::Bool=false) = length(t) <= 9 ? _sort(t, lt, by, rev) : _sort_long(t, lt, by, rev)
 
-function mysort(t::NTuple)
-	s = MVector(t)
-	sort!(s; alg = QuickSort)
+# Taken from TupleTools.jl
+@inline function _sort(t::Tuple, lt=isless, by=identity, rev::Bool=false)
+    t1, t2 = _split(t)
+    t1s = _sort(t1, lt, by, rev)
+    t2s = _sort(t2, lt, by, rev)
+    return _merge(t1s, t2s, lt, by, rev)
+end
+_sort(t::Tuple{Any}, lt=isless, by=identity, rev::Bool=false) = t
+_sort(t::Tuple{}, lt=isless, by=identity, rev::Bool=false) = t
+
+function _split(t::NTuple{N}) where N
+    M = N>>1
+    ntuple(i->t[i], M), ntuple(i->t[i+M], N-M)
+end
+
+function _merge(t1::Tuple, t2::Tuple, lt, by, rev)
+    if lt(by(first(t1)), by(first(t2))) != rev
+        return (first(t1), _merge(tail(t1), t2, lt, by, rev)...)
+    else
+        return (first(t2), _merge(t1, tail(t2), lt, by, rev)...)
+    end
+end
+_merge(::Tuple{}, t2::Tuple, lt, by, rev) = t2
+_merge(t1::Tuple, ::Tuple{}, lt, by, rev) = t1
+_merge(::Tuple{}, ::Tuple{}, lt, by, rev) = ()
+
+
+@inline function _sort_long(t::Tuple, lt=isless, by=identity, rev::Bool=false)
+	s = MVector{length(t), eltype(t)}(t)
+	sort!(s; lt = lt, by = by, rev = rev, alg = QuickSort)
 	Tuple(s)
 end
 
 
-function sortperm(t::NTuple)
-	s = MVector(oneto(length(t)))
-	sortperm!(s, SVector(t); alg = QuickSort)
+# For some reason there is still a big jump at length(t) == 10
+sortperm(t::Tuple; lt=isless, by=identity, rev::Bool=false) = length(t)<=9 ? _sortperm(t, lt, by, rev) : _sortperm_long(t, lt, by, rev)
+
+# Taken from TupleTools
+function _sortperm(t::Tuple, lt=isless, by=identity, rev::Bool=false)
+    _sort(ntuple(identity, length(t)), lt, i->by(getindex(t, i)), rev)
+end
+
+function _sortperm_long(t::Tuple, lt=isless, by=identity, rev::Bool=false)
+	s = MVector{length(t),Int}(undef)
+	sortperm!(s, SVector(t); lt =lt, by = by, rev = rev, alg = QuickSort)
 	Tuple(s)
 end
 
-
-
-allunique(t::NTuple) = length(t)<8 ? _allunique_by_pairs(t) : _allunique_by_sorting(t)
+allunique(t::NTuple) = length(t)<=7 ? _allunique_by_pairs(t) : _allunique_by_sorting(t)
 
 
 # Explicitly compare all pairs.  Best choice for small tuples
