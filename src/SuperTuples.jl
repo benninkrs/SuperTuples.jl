@@ -1,7 +1,8 @@
 # Additions/extensions to Julia that I (RSB) like
 module SuperTuples
 
-export oneto, tupseq, tupseqd, filltup, invpermute, firsttrue, findin, tcat
+export oneto, tupseq, tupseqd, filltup, cumtuple, accumtuple, invpermute
+export firsttrue, findin, tcat, indexed_union
 
 using StaticArrays
 using Base: tail
@@ -40,6 +41,41 @@ function ntuple(f, n::Integer, ::Type{T}) where {T}
 			Tuple(v)
 		end
 end
+
+
+# function ntuple_(f, n::Integer)
+# #	n == 0 ? () : (f(n), ntuple_(f, n-1)...)
+# 	ntuple_(f, Val(n))
+# end
+#
+# function ntuple_(f, ::Val{n}) where {n}
+# 	n == 0 ? () : (ntuple_(f, Val(n-1))..., f(n))
+# end
+#
+
+"""
+	cumtuple(f, x0, n)
+	cumtuple(f, x0, Val(n))
+
+Construct the tuple `(f(x0), f(f(x0)), ..., f^n(x0))`.
+"""
+cumtuple(f, x, n::Integer) = cumtuple(f, x, Val(n))
+function cumtuple(f, x, ::Val{n}) where {n}
+	# fk applies f k times
+	fk = k -> Base._foldoneto((y,j)-> j<=k ? f(y) : y, x, Val(n))
+	ntuple(fk, Val(n))
+end
+
+
+# For some reason this is slower than using Base._foldoneto:
+# cumtuple(f, x, ::Val{0}) = ()
+# function cumtuple(f, x, ::Val{n}) where {n}
+# 	(f(x), _cumtuple(f, f(x), Val(n-1))...)
+# end
+
+
+# This is faster than cumtuple:
+# ntuple(i->Base._foldoneto((x,j)-> j<=i ? f(x) : x, 1, Val(25)), Val(25))
 
 
 # This is only slightly faster than Base.map for 4<n<=10, and essentially the same for n>10.
@@ -258,32 +294,79 @@ getindex(t::Tuple, b::Tuple{Vararg{Bool}}) = length(b) == length(t) ? getindex(t
 # end
 
 
+
 """
-`invperm(p::Tuple)` returns the inverse of permutation `p`.  `p` is not checked.
+	accumtuple(v::Tuple, i::Dims, x0, n, accumfun = +)
+
+Construct a tuple of length `n` by accumulating values `v` at indices `i`.
+`x0` is the value assigned to elements not indexed by `i`.
+`accumfun(x, x_new)` is a binary function used to accumulate values.
+
+See also [`invpermute`](@ref)
 """
-function invperm(t::Tuple{Vararg{<:Number}})
-	p = MVector{length(t), Int}(undef)
-	for i = 1:length(t)
-		p[t[i]] = i
-	end
-	Tuple(p)
-	#p = t
-	#for i = 1:length(t)
-	#	p = setindex(p, i, t[i])
-	#end
-	#p
+accumtuple(v, idx, x0, n, op = +) = accumtuple(v, idx, x0, Val(n), op)
+
+function accumtuple(v, idx, x0, ::Val{N}, op = +) where {N}
+	 N<=32 ? accumtuple_short(v, idx, x0, Val(N), op) :
+	 			accumtuple_long(v, idx, x0, Val(N), op)
 end
 
 
-"""
-`invpermute(t::Tuple, p::Tuple)` returns `s` such that `s[p] = t`.  `p` is not checked.
-"""
-function invpermute(t::NTuple{N,Any}, p::NTuple{N,Number}) where {N}
-	s = MVector{length(t), Int}(undef)
-	for i = 1:length(t)
-		s[p[i]] = t[i]
+function accumtuple_short(v::NTuple{M,Any}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
+	f = i -> Base._foldoneto((a,j) -> idx[j] == i ? v[j] : a, x0, Val(M))
+	ntuple(Val(N)) do i
+		Base._foldoneto(x0, Val(M)) do a,j
+			(idx[j] > N || idx[j] < 0) && error("Index $(idx[j]) is invalid for a tuple of length $N")
+			idx[j] == i ? op(a, v[j]) : a
+		end
 	end
-	Tuple(s)
+end
+
+function accumtuple_long(v::NTuple{M,Any}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
+	p = fill(x0, (N, 1))
+	for i in 1:M
+		j = idx[i]
+		p[j] = op(p[j], v[i])
+	end
+	return ntuple(i->p[i], Val(N))
+end
+
+
+
+
+# Base has an implementation of invperm(::Tuple) which falls back to invperm(::Vector) for
+# n>=16. This version is significantly faster for n>=16.
+function invperm(p::Tuple{Vararg{<:Integer,N}}) where {N}
+	if N <= 32
+		return accumtuple(oneto(Val(N)), p, nothing, Val(N), replace_nothing)
+	else
+		invp = MVector{length(t), Int}(undef)
+		for i = 1:length(t)
+			invp[t[i]] = i
+		end
+		return Tuple(invp)
+	end
+end
+
+# Replace an element only if it has not been set already
+replace_nothing(::Nothing, x) = x
+replace_nothing(x, y) = error("Indices are not all unique")
+
+
+"""
+`invpermute(t::Tuple, p::Tuple)` returns `s` such that `s[p] = t`.  `p` is not checked if
+it is longer than 32.
+"""
+function invpermute(t::NTuple{N,Any}, p::NTuple{N,<:Integer}) where {N}
+	if N <= 32
+		return accumtuple(t, p, nothing, Val(N), replace_nothing)
+	else
+		s = SizedVector{length(t)}(Vector{Any}(undef, N))
+		for i = 1:length(t)
+			s[p[i]] = t[i]
+		end
+		return Tuple(s)
+	end
 end
 
 
@@ -406,7 +489,7 @@ function findzero(t::Tuple)
 
 end
 
-# Using sort is not advantageous for any reasonably-sized tuple
+# Using sort to find elements is not advantageous for any reasonably-sized tuple
 """
 `findin(v, t::NTuple)` returns the index of `v` in `t`.
 If `t` contains `v` more than once, the first index is returned.
@@ -439,7 +522,7 @@ end
 
 
 # If the tuple is short, using compiler-inferred merge sort.
-# Otherwise use quick sort with an MVector scratch space.
+# Otherwise use quicksort with an MVector scratch space.
 # A switchpoint of length(t)==15 would actually be better, but for some reason
 # setting higher then 9 causes major performance hits for selected length tuples (even
 # though the called functions are individually fast).
@@ -479,22 +562,22 @@ _merge(::Tuple{}, ::Tuple{}, lt, by, rev) = ()
 end
 
 
-# For some reason there is still a big jump at length(t) == 10
 sortperm(t::Tuple; lt=isless, by=identity, rev::Bool=false) = length(t)<=9 ? _sortperm(t, lt, by, rev) : _sortperm_long(t, lt, by, rev)
 
-# Taken from TupleTools
+# Adapted from TupleTools
 function _sortperm(t::Tuple, lt=isless, by=identity, rev::Bool=false)
-    _sort(ntuple(identity, length(t)), lt, i->by(getindex(t, i)), rev)
+    _sort(oneto(length(t)), lt, i->by(t[i]), rev)
 end
 
 function _sortperm_long(t::Tuple, lt=isless, by=identity, rev::Bool=false)
-	s = MVector{length(t),Int}(undef)
-	sortperm!(s, SVector(t); lt =lt, by = by, rev = rev, alg = QuickSort)
+	s = MVector(oneto(length(t)))
+	sort!(s, lt = lt, by = i -> by(t[i]), rev = rev, alg = QuickSort)
 	Tuple(s)
 end
 
-allunique(t::NTuple) = length(t)<=7 ? _allunique_by_pairs(t) : _allunique_by_sorting(t)
 
+
+allunique(t::NTuple) = length(t)<=7 ? _allunique_by_pairs(t) : _allunique_by_sorting(t)
 
 # Explicitly compare all pairs.  Best choice for small tuples
 function _allunique_by_pairs(t::NTuple)
@@ -523,7 +606,76 @@ function _allunique_by_sorting(t::NTuple)
 	true
 end
 
+"""
+	(u, i1, i2) = index_union(t1::Tuple, t2::Tuple)
 
+Returns a vector `u` that is the sorted union of elements in `t1`,`t2` and tuples
+`i1`,`i2` such that `t1 = u[i1]` and `t2 = u[i2]`.
+"""
+function indexed_union(t1::NTuple, t2::NTuple)
+	if length(t1) == 0
+		return (t1, (), oneto(length(t2)))
+	elseif length(t2) == 0
+		return (t2, oneto(length(t1)), ())
+	else
+		t12 = tcat(t1, t2)
+		U = promote_type(eltype(t1), eltype(t2))
+		N = length(t1) + length(t2)
+
+		# sort all the elements
+		perm = sortperm(t12)
+		iperm = invpermute(oneto(N), perm)
+ 		s12 = t12[perm]
+
+
+		# Extract unique elements and their indices in t1, t2
+		u = MVector{N,U}(undef)
+		#u = s12	# value doesn't matter, just need a tuple of same size as s12
+		s12_to_u = MVector{N,U}(undef)
+
+		u[1] = s12[1]
+		#u = setindex(u, s12[1], 1)
+		s12_to_u[1] = 1
+		j = 1
+		for i in 2:N
+			if s12[i] > s12[i-1]
+				j += 1
+				u[j] = s12[i]
+				#setindex(u, s12[i], j)
+			end
+			s12_to_u[i] = j
+		end
+
+		i1 = ntuple(i -> s12_to_u[iperm[i]], Val(length(t1)))
+		i2 = ntuple(i -> s12_to_u[iperm[i+length(t1)]], Val(length(t2)))
+# For u as a MVector:
+		return (u[1:j], i1, i2)		# 301 ns
+#		return (Tuple(u)[1:j], i1, i2)	# 764 ns
+#		return (Tuple(u)[oneto(j)], i1, i2)	# 890 ns
+#		return (Tuple(u[1:j]), i1, i2)	# 840 ns
+		#return
+	end
+end
+
+# function indexed_union(tups::Vararg{NTuple, M}) where M
+# 	lengths = map(length, tups)
+# 	bigtup = tcat(tups...)
+# 	N = length(bigtup)
+# 	isort = sortperm(bigtup)
+# 	bigsorted = bigtup[isort]
+# 	indS = MVector{Int,N}(undef)
+# 	ind_bs[1] = 1
+# 	for i in 2:N
+# 		if ind_bs[i] > ind_bs[i-1]
+# 			ind_bs[i] = ind_bs[i-1]+1
+# 		else
+# 			ind_bs[i] = ind_bs[i]
+# 		end
+# 	end
+#
+# 	ind_bs = ind_bs[isort]
+# error("unfinished!")
+# end
 
 # # Tuple arithmetic
 # # These appear to be super fast
