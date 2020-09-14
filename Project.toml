@@ -1,7 +1,7 @@
 name = "SuperTuples"
 uuid = "2532fb96-5642-438b-b515-97252d17ad77"
 authors = ["Ryan Bennink <benninkrs@ornl.gov>"]
-version = "0.3.2"
+version = "0.3.3"
 
 [deps]
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"

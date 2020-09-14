@@ -7,7 +7,7 @@ export firsttrue, findin, tcat, indexed_union
 using StaticArrays
 using Base: tail
 import StaticArrays: deleteat
-import Base: getindex, setindex!
+import Base: getindex, setindex, map
 import Base: ntuple, invperm, sort, sortperm
 import Base.Iterators.take
 
@@ -55,12 +55,12 @@ end
 
 """
 	cumtuple(f, x0, n)
-	cumtuple(f, x0, Val(n))
+	cumtuple(f, x0, Val{n})
 
 Construct the tuple `(f(x0), f(f(x0)), ..., f^n(x0))`.
 """
-cumtuple(f, x, n::Integer) = cumtuple(f, x, Val(n))
-function cumtuple(f, x, ::Val{n}) where {n}
+cumtuple(f, x, n::Integer) = cumtuple(f, x, Val{n})
+function cumtuple(f, x, ::Type{Val{n}}) where {n}
 	# fk applies f k times
 	fk = k -> Base._foldoneto((y,j)-> j<=k ? f(y) : y, x, Val(n))
 	ntuple(fk, Val(n))
@@ -145,8 +145,8 @@ usually leads to faster code than `1:n` or `Base.OneTo(n)`.  But when `n` is not
 """
 oneto(n::T) where {T<:Integer} = ntuple(identity, n, T)
 # When N can be inferred, the following are compile-time generated.
-oneto(::Val{0}) = ()
-oneto(::Val{N}) where {N} = (oneto(Val(N-1))..., N)
+oneto(::Type{Val{0}}) = ()
+oneto(::Type{Val{N}}) where {N} = (oneto(Val{N-1})..., N)
 # For Comparison, Base.OneTo produces an iterator, which is usually slower
 
 
@@ -234,7 +234,7 @@ end
 """
 filltup(v, n::Integer) = ntuple(i->v, n, typeof(v))
 # When this can be inferred it is compile-evaluated.  Otherwise it is SLOW
-filltup(v, ::Val{n}) where {n} = Base.fill_to_length((), v, Val(n))
+filltup(v, ::Type{Val{n}}) where {n} = Base.fill_to_length((), v, Val(n))
 
 
 # Concatenate tuples
@@ -247,8 +247,16 @@ getindex(t::Tuple, i::Tuple{Integer}) = (t[i[1]],)
 getindex(t::Tuple, i::Tuple{Integer,Integer}) = (t[i[1]], t[i[2]])
 getindex(t::Tuple, i::Tuple{Integer,Integer,Integer}) = (t[i[1]], t[i[2]], t[i[3]])
 getindex(t::Tuple, i::Tuple{Integer,Integer,Integer,Integer}) = (t[i[1]], t[i[2]], t[i[3]], t[i[4]])
-# On Julia 1.4, this is slow for length(inds) > 15
-getindex(t::Tuple, inds::Tuple{Vararg{Integer}}) = map(i->t[i], inds)
+getindex(t::Tuple, inds::Tuple{Vararg{Integer}}) = ntuple(i->t[inds[i]], length(inds))
+
+# On Julia 1.5, map is slow for length(inds) > 15
+# getindex(t::Tuple, inds::Tuple{Vararg{Integer}}) = map(i->t[i], inds)
+map(f, t::Tuple{Any, Any, Any, Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]))
+map(f, t::Tuple{Any, Any, Any, Any, Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]))
+map(f, t::Tuple{Any, Any, Any, Any, Any, Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]), f(t[6]))
+map(f, t::Tuple{Any, Any, Any, Any, Any, Any, Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]), f(t[6]), f(t[7]))
+map(f, t::Tuple{Any, Any, Any, Any, Any, Any, Any, Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]), f(t[6]), f(t[7]), f(t[8]))
+
 
 # A faster version for larger, uniformly-typed tuples
 const ManyIntegers = Tuple{Integer, Integer, Integer, Integer, Integer,
@@ -262,6 +270,30 @@ function getindex(t::Tuple{Vararg{T}}, inds::ManyIntegers) where {T}
 	Tuple(r)
 end
 
+"""
+	setindex(t::Tuple, v, i::Dims)
+
+Construct a tuple equivalent to `t[i] = v`.
+See also  ['accumtuple'](@ref) and [`invpermute`](@ref).
+"""
+@inline function setindex(t::Tuple, v, idx::Dims)
+	N = length(t)
+	M = length(idx)
+	if N <=32
+		return ntuple(Val(N)) do i
+			Base._foldoneto(t[i], Val(M)) do a,j
+				@boundscheck 1 <= idx[j] <= N  || throw(BoundsError(t, idx[j]))
+				idx[j] == i ? v[j] : a
+			end
+		end
+	else
+		s = MVector(t)
+		for i = 1:length(idx)
+			s[idx[i]] = v[i]
+		end
+		return Tuple(s)
+	end
+end
 
 # Logical indexing of tuples
 # We have to have to separate methods to take precedence over specific methods in Base.
@@ -302,7 +334,7 @@ Construct a tuple of length `n` by accumulating values `v` at indices `i`.
 `x0` is the value assigned to elements not indexed by `i`.
 `accumfun(x, x_new)` is a binary function used to accumulate values.
 
-See also [`invpermute`](@ref)
+See also  ['setindex'](@ref) and [`invpermute`](@ref).
 """
 accumtuple(v, idx, x0, n, op = +) = accumtuple(v, idx, x0, Val(n), op)
 
@@ -312,8 +344,7 @@ function accumtuple(v, idx, x0, ::Val{N}, op = +) where {N}
 end
 
 
-function accumtuple_short(v::NTuple{M,Any}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
-	f = i -> Base._foldoneto((a,j) -> idx[j] == i ? v[j] : a, x0, Val(M))
+function accumtuple_short(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
 	ntuple(Val(N)) do i
 		Base._foldoneto(x0, Val(M)) do a,j
 			(idx[j] > N || idx[j] < 0) && error("Index $(idx[j]) is invalid for a tuple of length $N")
@@ -322,7 +353,7 @@ function accumtuple_short(v::NTuple{M,Any}, idx::Dims{M}, x0, ::Val{N}, op) wher
 	end
 end
 
-function accumtuple_long(v::NTuple{M,Any}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
+function accumtuple_long(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
 	p = fill(x0, (N, 1))
 	for i in 1:M
 		j = idx[i]
@@ -354,8 +385,11 @@ replace_nothing(x, y) = error("Indices are not all unique")
 
 
 """
-`invpermute(t::Tuple, p::Tuple)` returns `s` such that `s[p] = t`.  `p` is not checked if
-it is longer than 32.
+	invpermute(t::Tuple, p::Tuple)
+
+Returns `s` such that `s[p] = t`.  `p` is not checked if it is longer than 32.
+
+See also [`accumtuple`](@ref).
 """
 function invpermute(t::NTuple{N,Any}, p::NTuple{N,<:Integer}) where {N}
 	if N <= 32
