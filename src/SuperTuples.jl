@@ -8,7 +8,7 @@ using StaticArrays
 using Base: tail
 import StaticArrays: deleteat
 import Base: getindex, setindex, map
-import Base: ntuple, invperm, sort, sortperm
+import Base: ntuple#, invperm, sort, sortperm
 import Base.Iterators.take
 
 
@@ -53,6 +53,7 @@ end
 # end
 #
 
+# TODO: Convert Val{n} and ::Type{Val{n}} to Val(n) and ::Val{n} ?
 """
 	cumtuple(f, x0, n)
 	cumtuple(f, x0, Val{n})
@@ -60,7 +61,7 @@ end
 Construct the tuple `(f(x0), f(f(x0)), ..., f^n(x0))`.
 """
 cumtuple(f, x, n::Integer) = cumtuple(f, x, Val{n})
-function cumtuple(f, x, ::Type{Val{n}}) where {n}
+function cumtuple(f, x, ::Val{n}) where {n}
 	# fk applies f k times
 	fk = k -> Base._foldoneto((y,j)-> j<=k ? f(y) : y, x, Val(n))
 	ntuple(fk, Val(n))
@@ -145,8 +146,8 @@ usually leads to faster code than `1:n` or `Base.OneTo(n)`.  But when `n` is not
 """
 oneto(n::T) where {T<:Integer} = ntuple(identity, n, T)
 # When N can be inferred, the following are compile-time generated.
-oneto(::Type{Val{0}}) = ()
-oneto(::Type{Val{N}}) where {N} = (oneto(Val{N-1})..., N)
+oneto(::Val{0}) = ()
+oneto(::Val{N}) where {N} = (oneto(Val(N-1))..., N)
 # For Comparison, Base.OneTo produces an iterator, which is usually slower
 
 
@@ -247,7 +248,7 @@ getindex(t::Tuple, i::Tuple{Integer}) = (t[i[1]],)
 getindex(t::Tuple, i::Tuple{Integer,Integer}) = (t[i[1]], t[i[2]])
 getindex(t::Tuple, i::Tuple{Integer,Integer,Integer}) = (t[i[1]], t[i[2]], t[i[3]])
 getindex(t::Tuple, i::Tuple{Integer,Integer,Integer,Integer}) = (t[i[1]], t[i[2]], t[i[3]], t[i[4]])
-getindex(t::Tuple, inds::Tuple{Vararg{Integer}}) = ntuple(i->t[inds[i]], length(inds))
+getindex(t::Tuple, inds::Tuple{Vararg{Integer}}) = ntuple(i->t[inds[i]], Val(length(inds)))
 
 # On Julia 1.5, map is slow for length(inds) > 15
 # getindex(t::Tuple, inds::Tuple{Vararg{Integer}}) = map(i->t[i], inds)
@@ -369,11 +370,11 @@ end
 # n>=16. This version is significantly faster for n>=16.
 function invperm(p::Tuple{Vararg{<:Integer,N}}) where {N}
 	if N <= 32
-		return accumtuple(oneto(Val(N)), p, nothing, Val(N), replace_nothing)
+		return accumtuple(oneto(Val{N}), p, nothing, Val(N), replace_nothing)
 	else
-		invp = MVector{length(t), Int}(undef)
-		for i = 1:length(t)
-			invp[t[i]] = i
+		invp = MVector{length(p), Int}(undef)
+		for i = 1:length(p)
+			invp[p[i]] = i
 		end
 		return Tuple(invp)
 	end
@@ -512,7 +513,7 @@ function findzero(t::Tuple)
 	r = t   # value doesn't matter, just need something the same size as t
 	ir = 0
 	for i = 1:length(t)
-		if b[i] == 0
+		if t[i] == 0
 			ir += 1
 			#r[ir] = t[i]
 			r = Base.setindex(r, t[i], ir)
@@ -523,6 +524,7 @@ function findzero(t::Tuple)
 
 end
 
+# TODO:  Considuer using _foldoneto, as in accumtuple
 # Using sort to find elements is not advantageous for any reasonably-sized tuple
 """
 `findin(v, t::NTuple)` returns the index of `v` in `t`.
@@ -546,7 +548,7 @@ the result indexes a tuple or array.
 @inline function firsttrue(b)
 	i = firstindex(b)
 	@inbounds while i <= lastindex(b)
-	if b[i]
+		if b[i]
 			return i
 		end
 		i += 1
@@ -555,7 +557,7 @@ the result indexes a tuple or array.
 end
 
 
-# If the tuple is short, using compiler-inferred merge sort.
+# If the tuple is short, use compiler-inferred merge sort.
 # Otherwise use quicksort with an MVector scratch space.
 # A switchpoint of length(t)==15 would actually be better, but for some reason
 # setting higher then 9 causes major performance hits for selected length tuples (even
