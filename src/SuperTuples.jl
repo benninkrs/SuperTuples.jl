@@ -365,29 +365,6 @@ function accumtuple(v, idx, x0, ::Val{N}, op=+) where {N}
 end
 
 
-# Why is this slow?
-function accumtup_(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
-   #f__(i) = i -> Base._foldoneto((s,j) -> idx[j] == i ? j : s, nothing, Val(N))
-
-   # ntuple(Val(N)) do i
-   # 	Base._foldoneto((s,j) -> idx[j] == i ? j : s, 0, Val(N))		# using nothing instead of 0 slows it down!
-   # end
-   ntuple(Val(N)) do i
-      Base._foldoneto(x0, Val(M)) do s, j
-         idx[j] == i ? op(s, v[j]) : s
-      end
-   end
-
-   # ntuple(Val(N)) do i
-   # 	 s = Base._foldoneto(nothing, Val(N)) do s, j
-   # 		  s !== nothing && return s
-   # 		  idx[j]==i && return j
-   # 		  nothing
-   # 	 end
-   # 	 s === nothing && throw(ArgumentError("argument is not a permutation"))
-   # 	 s
-   # end
-end
 
 # This is kind of slow, compared to, say, Base.invperm.  Why?
 function accumtuple_short(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
@@ -397,6 +374,19 @@ function accumtuple_short(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M
          # (idx[j] > N || idx[j] < 0) && error("Index $(idx[j]) is invalid for a tuple of length $N")
          idx[j] == i ? op(a, v[j]) : a
       end
+   end
+end
+
+
+# Closer to Base's version.  Slow when x0 is of different type than t
+function accumtup_(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
+   ntuple(Val(N)) do i
+      a = Base._foldoneto(nothing, Val(N)) do a, j
+         a !== nothing && return a
+         idx[j] == i && return op(a, v[j])
+         nothing
+      end
+      a === nothing ? x0 : a
    end
 end
 
@@ -412,8 +402,8 @@ end
 
 
 
-# Base has an implementation of invperm(::Tuple) which falls back to invperm(::Vector) for
-# n>=16. This version is significantly faster for n>=16.
+# Base has an implementation of invperm(::Tuple) which falls back to invperm(::Vector) for n>=16.
+# This version uses the Base code for N<=20, and a significantly faster method for n>=20.
 function invperm(p::Tuple{Vararg{<:Integer,N}}, b) where {N}
    if N <= 20
       #return accumtuple(oneto(Val(N)), p, 0, Val(N), (x,y) -> x==0 ? y : 0)
@@ -436,12 +426,11 @@ function invperm(p::Tuple{Vararg{<:Integer,N}}, b) where {N}
 end
 
 # Replace an element only if it has not been set already
-replace_nothing(::Nothing, x) = x
-replace_nothing(x, y) = error("Indices are not all unique")
+#replace_nothing(::Nothing, x) = x
+#replace_nothing(x, y) = error("Indices are not all unique")
 
 
 
-# THIS IS SLOW!
 """
 	invpermute(t::Tuple, p::Tuple)
 
@@ -451,7 +440,16 @@ See also [`accumtuple`](@ref).
 """
 function invpermute(t::NTuple{N,Any}, p::NTuple{N,<:Integer}) where {N}
    if N <= 32
-      return accumtuple(t, p, nothing, Val(N), replace_nothing)
+     #      return accumtuple_short(t, p, nothing, Val(N), replace_nothing)
+      ntuple(Val(N)) do i
+         a = Base._foldoneto(nothing, Val(N)) do a, j
+            a !== nothing && return a
+            idx[j] == i && return t[j]
+            nothing
+         end
+         a === nothing && throw(ArgumentError("p is not a permutation"))
+         a
+      end
    else
       s = SizedVector{length(t)}(Vector{Any}(undef, N))
       for i = 1:length(t)
