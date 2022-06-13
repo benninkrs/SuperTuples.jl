@@ -539,7 +539,7 @@ function invpermute(t::NTuple{N,Any}, p::NTuple{N,<:Integer}) where {N}
       ntuple(Val(N)) do i
          a = Base._foldoneto(nothing, Val(N)) do a, j
             a !== nothing && return a
-            idx[j] == i && return t[j]
+            p[j] == i && return t[j]
             nothing
          end
          a === nothing && throw(ArgumentError("p is not a permutation"))
