@@ -12,6 +12,14 @@ import Base: ntuple, invperm, sort, sortperm
 import Base: cumsum
 
 
+# TODO:  accumtuple()
+# - Make special method of accumtuple for NTuples of same type as x0
+# - Figure out which methods are fasted and dispatch to fastest one
+#
+# TODO: getindex, select, findall
+# - figure out which methods are fastest and dispatch to fastest one
+
+
 # Tuple constructors
 
 """
@@ -42,6 +50,26 @@ function ntuple(f, n::Integer, ::Type{T}) where {T}
    end
 end
 
+# function ntuple(f, ::Val{n}, ::Type{T}) where {n} where {T}
+#    t = n == 0 ? () :
+#        n == 1 ? NTuple{n,T}((f(1),)) :
+#        n == 2 ? NTuple{n,T}((f(1), f(2))) :
+#        n == 3 ? NTuple{n,T}((f(1), f(2), f(3))) :
+#        n == 4 ? NTuple{n,T}((f(1), f(2), f(3), f(4))) :
+#        n == 5 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5))) :
+#        n == 6 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5), f(6))) :
+#        n == 7 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5), f(6), f(7))) :
+#        n == 8 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8))) :
+#        n == 9 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8), f(9))) :
+#        n == 10 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8), f(9), f(10))) :
+#    begin
+#       v = MVector{n,T}(undef)
+#       @inbounds for i in 1:n
+#          v[i] = f(i)
+#       end
+#       Tuple(v)
+#    end
+# end
 
 # function ntuple_(f, n::Integer)
 # #	n == 0 ? () : (f(n), ntuple_(f, n-1)...)
@@ -68,7 +96,7 @@ end
 
 
 function cumsum(t::Tuple)
-   f = i -> Base._foldoneto((x, j) -> j <= i ? x + t[j] : x, 0, Val(length(t)))
+   f = i -> Base._foldoneto((x, j) -> j <= i ? x + t[j] : x, false, Val(length(t)))
    ntuple(f, Val(length(t)))
 end
 
@@ -311,6 +339,10 @@ end
 # getindex(t::Tuple, b::AbstractArray{Bool,1}) = getindex_t(t, b)
 # getindex(t::Tuple, b::Tuple{Vararg{Bool}}) = getindex_t(t, b)
 getindex(t::Tuple, b::Tuple{Vararg{Bool}}) = length(b) == length(t) ? getindex(t, findall(b)) : throw(BoundsError(t, b))
+getindex(t::Tuple{Vararg{T}}, b::Tuple{Vararg{Bool}}) where {T} = length(b) == length(t) ? getindex(t, findall(b)) : throw(BoundsError(t, b))
+const ManyBool = Tuple{Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Vararg{Bool}}
+getindex(t::Tuple{Vararg{T}}, b::ManyBool) where {T} = length(b) == length(t) ? getindex(t, findall(b)) : throw(BoundsError(t, b))
+
 
 # # As of Julia 1.4, this is no faster than Base's implementation, which uses findall.
 # # The type of r is inferred from t
@@ -335,6 +367,69 @@ getindex(t::Tuple, b::Tuple{Vararg{Bool}}) = length(b) == length(t) ? getindex(t
 # 		throw(BoundsError(t, b))
 # 	end
 # end
+
+
+# Type inferred
+#findall_(b::Tuple{Vararg{Bool}}) = findall_(Val(b))
+
+# # Very slow!
+# function findall_(b::Tuple{Vararg{Bool}})
+# 	n = sum(b)
+# 	cumb = cumsum(b) .* b
+# 	ntuple(Val(n)) do i
+# 		# t[i]
+# 		# find the index of the ith true element
+# 		Base._foldoneto(0, Val(length(b))) do j, k
+# 			cumb[k] == i ? k : j
+# 		end
+# 	end
+# end
+
+# # Also slower than findall
+# function findall_(::Val{b}) where {b}
+# 	isempty(b) || b isa Tuple{Vararg{Bool}} || error("b must be a tuple of Bools")
+# 	n = sum(b)
+# 	cumb = cumsum(b) .* b
+# 	ntuple(Val(n)) do i
+# 		# t[i]
+# 		# find the index of the ith true element
+# 		Base._foldoneto(0, Val(length(b))) do j, k
+# 			cumb[k] == i ? k : j
+# 		end
+# 	end
+# end
+
+
+# select is a tentative replacement for getindex(tuple, bool_tuple)
+
+# Not type inferred
+select(t::Tuple, mask::Tuple{Vararg{Bool}}) = select(t, Val(mask))
+
+function select(t::Tuple, ::Val{mask}) where {mask}
+	length(mask) == length(t) || error("t and mask must have the same length")
+	n = sum(mask)
+	cummask = cumsum(mask) .* mask
+	ntuple(Val(n)) do i
+		# t[i]
+		# find the index of the ith true element
+		j = Base._foldoneto(0, Val(length(t))) do j_, k
+			cummask[k] == i ? k : j_
+		end
+		t[j]
+	end
+end
+
+
+# select_(t::Tuple, ::Val{()}) = ()
+# function select_(t::Tuple, ::Val{mask}) where {mask}
+# 	if mask[1]
+# 		return (t[1], select_(Base.tail(t), Val(Base.tail(mask)))...)
+# 	else
+# 		return select_(Base.tail(t), Val(Base.tail(mask)))
+# 	end
+# end
+
+
 
 
 # On Julia 1.5, map is slow for length(inds) >= 16
