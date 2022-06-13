@@ -339,7 +339,7 @@ end
 # getindex(t::Tuple, b::AbstractArray{Bool,1}) = getindex_t(t, b)
 # getindex(t::Tuple, b::Tuple{Vararg{Bool}}) = getindex_t(t, b)
 getindex(t::Tuple, b::Tuple{Vararg{Bool}}) = length(b) == length(t) ? getindex(t, findall(b)) : throw(BoundsError(t, b))
-getindex(t::Tuple{Vararg{T}}, b::Tuple{Vararg{Bool}}) where {T} = length(b) == length(t) ? getindex(t, findall(b)) : throw(BoundsError(t, b))
+#getindex(t::Tuple{Vararg{T}}, b::Tuple{Vararg{Bool}}) where {T} = length(b) == length(t) ? getindex(t, findall(b)) : throw(BoundsError(t, b))
 const ManyBool = Tuple{Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Vararg{Bool}}
 getindex(t::Tuple{Vararg{T}}, b::ManyBool) where {T} = length(b) == length(t) ? getindex(t, findall(b)) : throw(BoundsError(t, b))
 
