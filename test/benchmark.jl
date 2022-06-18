@@ -53,6 +53,28 @@ for n = [5,10,15,20,30, 32, 33, 40]
 
 end
 
+
+function f()
+	if @generated
+		quote
+			true
+		end
+	else
+		false
+	end
+end
+
+expr = quote
+	function g()
+	if @generated
+		quote
+			true
+		end
+	else
+		false
+	end
+end
+end
 # Conclusions:
 #  When m is all true, select is better than t[m] for n <= 32
 #  When m is mostly false, t[m] is better for all n

@@ -20,6 +20,31 @@ import Base: cumsum
 # - figure out which methods are fastest and dispatch to fastest one
 
 
+# Equivalent to Base._foldoneto
+"""
+`static_fn(op, a, Val(n))` statically computes f_n(⋯f_1(a)) where f_i(x) = op(x, i)
+"""
+@inline function static_fn(op, acc, ::Val{N}) where N
+   @assert N::Integer > 0
+   if @generated
+       quote
+         quote
+           acc_0 = acc
+           Base.Cartesian.@nexprs $N i -> acc_{i} = op(acc_{i-1}, i)
+           return $(Symbol(:acc_, N))
+       end
+      end
+   else
+       quote
+         for i in 1:N
+           acc = op(acc, i)
+       end
+       return acc
+      end
+   end
+end
+
+
 # Tuple constructors
 
 """
@@ -90,13 +115,13 @@ Construct the tuple `(f(x0), f(f(x0)), ..., f^n(x0))`.
 tupseqiter(f, x, n::Integer) = tupseqiter(f, x, Val{n})
 function tupseqiter(f, x, ::Val{n}) where {n}
    # fk applies f k times
-   fk = k -> Base._foldoneto((y, j) -> j <= k ? f(y) : y, x, Val(n))
+   fk = k -> static_fn((y, j) -> j <= k ? f(y) : y, x, Val(n))
    ntuple(fk, Val(n))
 end
 
 
 function cumsum(t::Tuple)
-   f = i -> Base._foldoneto((x, j) -> j <= i ? x + t[j] : x, false, Val(length(t)))
+   f = i -> static_fn((x, j) -> j <= i ? x + t[j] : x, false, Val(length(t)))
    ntuple(f, Val(length(t)))
 end
 
@@ -111,7 +136,7 @@ end
 # end
 
 
-# For some reason this is slower than using Base._foldoneto:
+# For some reason this is slower than using static_fn:
 # cumtuple(f, x, ::Val{0}) = ()
 # function cumtuple(f, x, ::Val{n}) where {n}
 # 	(f(x), _cumtuple(f, f(x), Val(n-1))...)
@@ -119,7 +144,7 @@ end
 
 
 # This is faster than cumtuple:
-# ntuple(i->Base._foldoneto((x,j)-> j<=i ? f(x) : x, 1, Val(25)), Val(25))
+# ntuple(i->static_fn((x,j)-> j<=i ? f(x) : x, 1, Val(25)), Val(25))
 
 
 # This is only slightly faster than Base.map for 4<n<=10, and essentially the same for n>10.
@@ -320,7 +345,7 @@ See also  ['accumtuple'](@ref) and [`invpermute`](@ref).
    M = length(idx)
    if N <= 32
       return ntuple(Val(N)) do i
-         Base._foldoneto(t[i], Val(M)) do a, j
+         static_fn(t[i], Val(M)) do a, j
             @boundscheck 1 <= idx[j] <= N || throw(BoundsError(t, idx[j]))
             idx[j] == i ? v[j] : a
          end
@@ -379,7 +404,7 @@ getindex(t::Tuple{Vararg{T}}, b::ManyBool) where {T} = length(b) == length(t) ? 
 # 	ntuple(Val(n)) do i
 # 		# t[i]
 # 		# find the index of the ith true element
-# 		Base._foldoneto(0, Val(length(b))) do j, k
+# 		static_fn(0, Val(length(b))) do j, k
 # 			cumb[k] == i ? k : j
 # 		end
 # 	end
@@ -393,7 +418,7 @@ getindex(t::Tuple{Vararg{T}}, b::ManyBool) where {T} = length(b) == length(t) ? 
 # 	ntuple(Val(n)) do i
 # 		# t[i]
 # 		# find the index of the ith true element
-# 		Base._foldoneto(0, Val(length(b))) do j, k
+# 		static_fn(0, Val(length(b))) do j, k
 # 			cumb[k] == i ? k : j
 # 		end
 # 	end
@@ -412,7 +437,7 @@ function select(t::Tuple, ::Val{mask}) where {mask}
 	ntuple(Val(n)) do i
 		# t[i]
 		# find the index of the ith true element
-		j = Base._foldoneto(0, Val(length(t))) do j_, k
+		j = static_fn(0, Val(length(t))) do j_, k
 			cummask[k] == i ? k : j_
 		end
 		t[j]
@@ -464,7 +489,7 @@ end
 # This is kind of slow, compared to, say, Base.invperm.  Why?
 function accumtuple_short(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
    ntuple(Val(N)) do i
-      Base._foldoneto(x0, Val(M)) do a, j
+      static_fn(x0, Val(M)) do a, j
          # this bounds check slows things down a lot
          # (idx[j] > N || idx[j] < 0) && error("Index $(idx[j]) is invalid for a tuple of length $N")
          idx[j] == i ? op(a, v[j]) : a
@@ -476,7 +501,7 @@ end
 # Closer to Base's version.  Slow when x0 is of different type than t
 function accumtup_(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
    ntuple(Val(N)) do i
-      a = Base._foldoneto(nothing, Val(N)) do a, j
+      a = static_fn(nothing, Val(N)) do a, j
          a !== nothing && return a
          idx[j] == i && return op(a, v[j])
          nothing
@@ -503,7 +528,7 @@ function invperm(p::Tuple{Vararg{<:Integer,N}}, b) where {N}
    if N <= 20
       #return accumtuple(oneto(Val(N)), p, 0, Val(N), (x,y) -> x==0 ? y : 0)
       ntuple(Val(N)) do i
-         s = Base._foldoneto(nothing, Val(N)) do s, j
+         s = static_fn(nothing, Val(N)) do s, j
             s !== nothing && return s
             p[j] == i && return j
             nothing
@@ -537,7 +562,7 @@ function invpermute(t::NTuple{N,Any}, p::NTuple{N,<:Integer}) where {N}
    if N <= 32
      #      return accumtuple_short(t, p, nothing, Val(N), replace_nothing)
       ntuple(Val(N)) do i
-         a = Base._foldoneto(nothing, Val(N)) do a, j
+         a = static_fn(nothing, Val(N)) do a, j
             a !== nothing && return a
             p[j] == i && return t[j]
             nothing
