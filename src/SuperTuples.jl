@@ -27,20 +27,16 @@ import Base: cumsum
 @inline function static_fn(op, acc, ::Val{N}) where N
    @assert N::Integer > 0
    if @generated
-       quote
-         quote
-           acc_0 = acc
-           Base.Cartesian.@nexprs $N i -> acc_{i} = op(acc_{i-1}, i)
-           return $(Symbol(:acc_, N))
-       end
+      quote
+         acc_0 = acc
+         Base.Cartesian.@nexprs $N i -> acc_{i} = op(acc_{i-1}, i)
+         return $(Symbol(:acc_, N))
       end
    else
-       quote
-         for i in 1:N
-           acc = op(acc, i)
-       end
-       return acc
+      for i in 1:N
+         acc = op(acc, i)
       end
+      return acc
    end
 end
 
