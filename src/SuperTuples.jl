@@ -2,13 +2,14 @@
 module SuperTuples
 
 export oneto, tupseq, tupseqd, filltup, tupseqiter, accumtuple, invpermute
-export firsttrue, findin, tcat, indexed_union
+export findin, tfindall, tcat #, indexed_union
+#export ntuple_, map_
 
 using StaticArrays
 using Base: tail
 import StaticArrays: deleteat
-import Base: getindex, setindex, map
-import Base: ntuple, invperm, sort, sortperm
+import Base: getindex, setindex
+import Base: ntuple, invperm, sort, sortperm, findfirst
 import Base: cumsum
 
 
@@ -23,6 +24,8 @@ import Base: cumsum
 # Equivalent to Base._foldoneto
 """
 `static_fn(op, a, Val(n))` statically computes f_n(⋯f_1(a)) where f_i(x) = op(x, i)
+
+[It seems that one could achieve the same thing by just defining op recursively ...?]
 """
 @inline function static_fn(op, acc, ::Val{N}) where N
    @assert N::Integer > 0
@@ -43,35 +46,15 @@ end
 
 # Tuple constructors
 
-"""
-	ntuple(f, n, T)
+# # On 1.6.0 this appears to be obsolete. -- Base ntuple is faster
+# """
+# 	ntuple(f, n, T)
 
-Create an `NTuple{N,T}` with values `(f(1), ..., f(n))`. For n>10, this is much faster
-than ntuple(f, n).  An `InexactError` will occur if any of `f(1)`,...,`f(n)` cannot be
-converted to type `T`.
-"""
-function ntuple(f, n::Integer, ::Type{T}) where {T}
-   t = n == 0 ? () :
-       n == 1 ? NTuple{n,T}((f(1),)) :
-       n == 2 ? NTuple{n,T}((f(1), f(2))) :
-       n == 3 ? NTuple{n,T}((f(1), f(2), f(3))) :
-       n == 4 ? NTuple{n,T}((f(1), f(2), f(3), f(4))) :
-       n == 5 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5))) :
-       n == 6 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5), f(6))) :
-       n == 7 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5), f(6), f(7))) :
-       n == 8 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8))) :
-       n == 9 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8), f(9))) :
-       n == 10 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8), f(9), f(10))) :
-   begin
-      v = MVector{n,T}(undef)
-      @inbounds for i in 1:n
-         v[i] = f(i)
-      end
-      Tuple(v)
-   end
-end
-
-# function ntuple(f, ::Val{n}, ::Type{T}) where {n} where {T}
+# Create an `NTuple{N,T}` with values `(f(1), ..., f(n))`. For n>10, this is much faster
+# than ntuple(f, n).  An `InexactError` will occur if any of `f(1)`,...,`f(n)` cannot be
+# converted to type `T`.
+# """
+# function ntuple_(f, n::Integer, ::Type{T}) where {T}
 #    t = n == 0 ? () :
 #        n == 1 ? NTuple{n,T}((f(1),)) :
 #        n == 2 ? NTuple{n,T}((f(1), f(2))) :
@@ -83,6 +66,27 @@ end
 #        n == 8 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8))) :
 #        n == 9 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8), f(9))) :
 #        n == 10 ? NTuple{n,T}((f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8), f(9), f(10))) :
+#          begin
+#       v = MVector{n,T}(undef)
+#       @inbounds for i in 1:n
+#          v[i] = f(i)
+#       end
+#       Tuple(v)
+#    end
+# end
+
+# function ntuple_(f, ::Val{n}, ::Type{T}) where {n} where {T}
+#    t = n == 0 ? () :
+#        n == 1 ? ((f(1),)) :
+#        n == 2 ? ((f(1), f(2))) :
+#        n == 3 ? ((f(1), f(2), f(3))) :
+#        n == 4 ? ((f(1), f(2), f(3), f(4))) :
+#        n == 5 ? ((f(1), f(2), f(3), f(4), f(5))) :
+#        n == 6 ? ((f(1), f(2), f(3), f(4), f(5), f(6))) :
+#        n == 7 ? ((f(1), f(2), f(3), f(4), f(5), f(6), f(7))) :
+#        n == 8 ? ((f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8))) :
+#        n == 9 ? ((f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8), f(9))) :
+#        n == 10 ? ((f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8), f(9), f(10))) :
 #    begin
 #       v = MVector{n,T}(undef)
 #       @inbounds for i in 1:n
@@ -116,11 +120,15 @@ function tupseqiter(f, x, ::Val{n}) where {n}
 end
 
 
-function cumsum(t::Tuple)
-   f = i -> static_fn((x, j) -> j <= i ? x + t[j] : x, false, Val(length(t)))
+function cumsum(t::Tuple{Vararg{Integer}})
+   f = i -> static_fn((x, j) -> j <= i ? x + t[j] : x, 0, Val(length(t)))
    ntuple(f, Val(length(t)))
 end
 
+function cumsum(t::Tuple{Vararg{Float64}})
+   f = i -> static_fn((x, j) -> j <= i ? x + t[j] : x, 0, Val(length(t)))
+   ntuple(f, Val(length(t)))
+end
 
 # SLOW!
 # cumsumtup_(t::Tuple{}) = ()
@@ -208,7 +216,7 @@ end
 Construct the tuple `(1,2,...,n)`.  When `n` is inferrable the constructions above
 usually leads to faster code than `1:n` or `Base.OneTo(n)`.  But when `n` is not inferrable, the latter constructions are preferred.
 """
-oneto(n::T) where {T<:Integer} = ntuple(identity, n, T)
+oneto(n::T) where {T<:Integer} = ntuple(identity, n)
 # When N can be inferred, the following are compile-time generated.
 oneto(::Val{0}) = ()
 oneto(::Val{N}) where {N} = (oneto(Val(N - 1))..., N)
@@ -299,7 +307,7 @@ end
 """
 `filltup(v, n::Integer)` produces a length-'n' tuple filled with the value 'v'.
 """
-filltup(v, n::Integer) = ntuple(i -> v, n, typeof(v))
+filltup(v, n::Integer) = ntuple(i -> v, n)
 # When this can be inferred it is compile-evaluated.  Otherwise it is SLOW
 filltup(v, ::Type{Val{n}}) where {n} = Base.fill_to_length((), v, Val(n))
 
@@ -315,6 +323,7 @@ getindex(t::Tuple, i::Tuple{Integer,Integer}) = (t[i[1]], t[i[2]])
 getindex(t::Tuple, i::Tuple{Integer,Integer,Integer}) = (t[i[1]], t[i[2]], t[i[3]])
 getindex(t::Tuple, i::Tuple{Integer,Integer,Integer,Integer}) = (t[i[1]], t[i[2]], t[i[3]], t[i[4]])
 getindex(t::Tuple, inds::Tuple{Vararg{Integer}}) = ntuple(i -> t[inds[i]], Val(length(inds)))
+# getindex(t::Tuple, inds::Tuple{Vararg{Integer}}) = map(i->t[i], inds)
 
 # A faster version for large uniformly-typed tuples
 const ManyIntegers = Tuple{Integer,Integer,Integer,Integer,Integer,
@@ -328,6 +337,23 @@ function getindex(t::Tuple{Vararg{T}}, inds::ManyIntegers) where {T}
    Tuple(r)
 end
 
+
+# Logical indexing of tuples
+# We have to have to separate methods to take precedence over specific methods in Base.
+getindex(t::Tuple, b::Tuple{Vararg{Bool}}) = getindex_(t, b)
+const ManyBool = Tuple{Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Vararg{Bool}}
+getindex(t::Tuple{Vararg{T}}, b::ManyBool) where {T} = getindex_(t, b)
+
+
+function getindex_(t::Tuple, b)
+   # length(b) == length(t) ? getindex(t, tfindall(b)) : throw(BoundsError(t, b))
+   length(b) == length(t) || throw(BoundsError(t, b))
+   # replicating the code from tfindall here makes it faster
+   n = length(t)
+   c = cumsum(b)
+   m = c[end]
+   ntuple(i->t[findin(c, i)], m)
+end
 
 # Base has setindex(tuple, value, index), but not setindex(tuple, values, tuple)
 """
@@ -355,111 +381,17 @@ See also  ['accumtuple'](@ref) and [`invpermute`](@ref).
    end
 end
 
-# Logical indexing of tuples
-# We have to have to separate methods to take precedence over specific methods in Base.
-# getindex(t::Tuple, b::AbstractArray{Bool,1}) = getindex_t(t, b)
-# getindex(t::Tuple, b::Tuple{Vararg{Bool}}) = getindex_t(t, b)
-getindex(t::Tuple, b::Tuple{Vararg{Bool}}) = length(b) == length(t) ? getindex(t, findall(b)) : throw(BoundsError(t, b))
-#getindex(t::Tuple{Vararg{T}}, b::Tuple{Vararg{Bool}}) where {T} = length(b) == length(t) ? getindex(t, findall(b)) : throw(BoundsError(t, b))
-const ManyBool = Tuple{Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Vararg{Bool}}
-getindex(t::Tuple{Vararg{T}}, b::ManyBool) where {T} = length(b) == length(t) ? getindex(t, findall(b)) : throw(BoundsError(t, b))
 
 
-# # As of Julia 1.4, this is no faster than Base's implementation, which uses findall.
-# # The type of r is inferred from t
-# # Using MVector is a little faster, but loses type flexibility.
-# @inline function getindex_t(t::Tuple, b)
-# 	if length(b) == length(t)
-# 		r = t   # value doesn't matter, just need something the same size as t
-# 		#r = MVector{length(t), eltype(t)}(undef)
-# 		ir = 0
-# 		for i = 1:length(t)
-# 			if b[i]
-# 				ir += 1
-# 				#r[ir] = t[i]
-# 				r = Base.setindex(r, t[i], ir)
-# 			end
-# 			#i += 1
-# 		end
-# 		return r[oneto(ir)]
-# 		#return Tuple(r)[oneto(ir)]
-# 		#return Tuple(r[1:ir])
-# 	else
-# 		throw(BoundsError(t, b))
-# 	end
-# end
-
-
-# Type inferred
-#findall_(b::Tuple{Vararg{Bool}}) = findall_(Val(b))
-
-# # Very slow!
-# function findall_(b::Tuple{Vararg{Bool}})
-# 	n = sum(b)
-# 	cumb = cumsum(b) .* b
-# 	ntuple(Val(n)) do i
-# 		# t[i]
-# 		# find the index of the ith true element
-# 		static_fn(0, Val(length(b))) do j, k
-# 			cumb[k] == i ? k : j
-# 		end
-# 	end
-# end
-
-# # Also slower than findall
-# function findall_(::Val{b}) where {b}
-# 	isempty(b) || b isa Tuple{Vararg{Bool}} || error("b must be a tuple of Bools")
-# 	n = sum(b)
-# 	cumb = cumsum(b) .* b
-# 	ntuple(Val(n)) do i
-# 		# t[i]
-# 		# find the index of the ith true element
-# 		static_fn(0, Val(length(b))) do j, k
-# 			cumb[k] == i ? k : j
-# 		end
-# 	end
-# end
-
-
-# select is a tentative replacement for getindex(tuple, bool_tuple)
-
-# Not type inferred
-select(t::Tuple, mask::Tuple{Vararg{Bool}}) = select(t, Val(mask))
-
-function select(t::Tuple, ::Val{mask}) where {mask}
-	length(mask) == length(t) || error("t and mask must have the same length")
-	n = sum(mask)
-	cummask = cumsum(mask) .* mask
-	ntuple(Val(n)) do i
-		# t[i]
-		# find the index of the ith true element
-		j = static_fn(0, Val(length(t))) do j_, k
-			cummask[k] == i ? k : j_
-		end
-		t[j]
-	end
-end
-
-
-# select_(t::Tuple, ::Val{()}) = ()
-# function select_(t::Tuple, ::Val{mask}) where {mask}
-# 	if mask[1]
-# 		return (t[1], select_(Base.tail(t), Val(Base.tail(mask)))...)
-# 	else
-# 		return select_(Base.tail(t), Val(Base.tail(mask)))
-# 	end
-# end
-
-
-
-
-# On Julia 1.5, map is slow for length(inds) >= 16
-# getindex(t::Tuple, inds::Tuple{Vararg{Integer}}) = map(i->t[i], inds)
-map(f, t::Tuple{Any,Any,Any,Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]))
-map(f, t::Tuple{Any,Any,Any,Any,Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]))
-map(f, t::Tuple{Any,Any,Any,Any,Any,Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]), f(t[6]))
-map(f, t::Tuple{Any,Any,Any,Any,Any,Any,Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]), f(t[6]), f(t[7]))
-map(f, t::Tuple{Any,Any,Any,Any,Any,Any,Any,Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]), f(t[6]), f(t[7]), f(t[8]))
+# On Julia 1.6, map is slow for length(inds) >= 16.
+# How can we overload it?
+# map_(f, t::Tuple{Any,Any,Any,Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]))
+# map_(f, t::Tuple{Any,Any,Any,Any,Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]))
+# map_(f, t::Tuple{Any,Any,Any,Any,Any,Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]), f(t[6]))
+# map_(f, t::Tuple{Any,Any,Any,Any,Any,Any,Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]), f(t[6]), f(t[7]))
+# map_(f, t::Tuple{Any,Any,Any,Any,Any,Any,Any,Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]), f(t[6]), f(t[7]), f(t[8]))
+# map_(f, t::Tuple{Any,Any,Any,Any,Any,Any,Any,Any,Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]), f(t[6]), f(t[7]), f(t[8]), f(t[9]))
+# map_(f, t::Tuple{Any,Any,Any,Any,Any,Any,Any,Any,Any,Any}) = (f(t[1]), f(t[2]), f(t[3]), f(t[4]), f(t[5]), f(t[6]), f(t[7]), f(t[8]), f(t[9]), f(t[10]))
 
 
 
@@ -494,18 +426,6 @@ function accumtuple_short(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M
 end
 
 
-# Closer to Base's version.  Slow when x0 is of different type than t
-function accumtup_(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
-   ntuple(Val(N)) do i
-      a = static_fn(nothing, Val(N)) do a, j
-         a !== nothing && return a
-         idx[j] == i && return op(a, v[j])
-         nothing
-      end
-      a === nothing ? x0 : a
-   end
-end
-
 function accumtuple_long(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
    p = fill(x0, (N, 1))
    for i in 1:M
@@ -514,6 +434,20 @@ function accumtuple_long(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M,
    end
    return ntuple(i -> p[i], Val(N))
 end
+
+
+
+# # Closer to Base's version.  Slow when x0 is of different type than t
+# function accumtup_(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
+#    ntuple(Val(N)) do i
+#       a = static_fn(nothing, Val(N)) do a, j
+#          a !== nothing && return a
+#          idx[j] == i && return op(a, v[j])
+#          nothing
+#       end
+#       a === nothing ? x0 : a
+#    end
+# end
 
 
 
@@ -541,18 +475,16 @@ function invperm(p::Tuple{Vararg{<:Integer,N}}, b) where {N}
    end
 end
 
-# Replace an element only if it has not been set already
-#replace_nothing(::Nothing, x) = x
-#replace_nothing(x, y) = error("Indices are not all unique")
 
 
 
 """
 	invpermute(t::Tuple, p::Tuple)
 
-Returns `s` such that `s[p] = t`.  If `p` is longer than 32, its validity as a permutation is not checked.
+Returns `s` such that `s[p] == t`, or equivalently `s = t[invperm(p)]`.
+If `p` is longer than 32, its validity as a permutation is not checked.
 
-See also [`accumtuple`](@ref).
+See also [`findin`](@ref) and [`accumtuple`](@ref).
 """
 function invpermute(t::NTuple{N,Any}, p::NTuple{N,<:Integer}) where {N}
    if N <= 32
@@ -576,50 +508,8 @@ function invpermute(t::NTuple{N,Any}, p::NTuple{N,<:Integer}) where {N}
 end
 
 
-# There are 3 ways to partition a tuple t:
-#  1. a = t[mask]; b = t[(!).(mask)]
-#  2. a = select(t, mask); b = antiselect(t, mask)
-#  3. (a, b) = partition_tuple(t, mask)  # (using _partition_tuple)
-#  4. (r1, i1, r2, i2) = partition_tuple(t, mask)  # (using __partition_tuple)
-#		a = r[oneto(i1)];
-#		b = r[oneto(i2)];
-#
-#  Methods 2 and 4 are the fastest (130 ns); then method 1 (200 ns), then method 3 (400 ns).
 
 
-# # Actually, this is the fastest!
-# """
-# `select(t::Tuple, b::AbstractArray{Bool})`
-# Selects the elements of `t` at which `b` is `true`. (Equivalent to `t[mask]`.)
-# """
-# select(t, mask) = t[mask]
-#
-# """
-# `antiselect(t::Tuple, b::AbstractArray{Bool})`
-# Selects the elements of `t` at which `b` is `false`. (Equivalent to
-# `t[(!).(mask)]` but faster.)
-# """
-# function deleteat(t, b::Union{AbstractArray{Bool}, Tuple{Vararg{Bool}}})
-# 	if length(b) == length(t)
-# 		r = t   # value doesn't matter, just need something the same size as t
-# 		ir = 0
-# 		# Do the logical indexing "by hand".  This is faster than indexing with !b
-# 		# because it doesn't allocate a temporary array.
-# 		for i = 1:length(t)
-# 			if !b[i]
-# 				ir += 1
-# 				#r[ir] = t[i]
-# 				r = Base.setindex(r, t[i], ir)
-# 			end
-# 		end
-# 		return r[oneto(ir)]
-# 		#return Tuple(r)[oneto(ir)]
-# 	else
-# 		throw(BoundsError(t, b))
-# 	end
-# end
-#
-#
 """
 	deleteat(t::Tuple, I::Integer)
 	deleteat(t::Tuple, I::Iterable{Integer})
@@ -658,74 +548,139 @@ function _deleteat_long(t::Tuple, I::Union{AbstractArray{Integer},Tuple{Vararg{I
    return t[b]
 end
 
-# """
-# Tuple set difference (Not type stable).
-# """
-# tupdiff(t::NTuple, s::NTuple) = tuple(Iterators.filter(i-> !in(i, s), t)...)
-#
-# tupintersect(t::NTuple, s::NTuple) = tuple(Iterators.filter(i-> in(i, s), t)...)
-#
 
 
-# This always returns a Bool. (missing counts as false)
-# function in(v, t::NTuple)
-# 	i = 1
-# 	while i <= length(t)
-# 		if v == t[i]
-# 			return true
-# 		end
-# 		i += 1
-# 	end
-# 	false
+# Compiler-inferrable version for tuples
+function findfirst(::Val{b}) where {b}
+   N = length(b)
+   static_fn(nothing, Val(N)) do i, j
+      i !== nothing && return i
+      b[j] && return j
+      nothing
+   end
+end
+
+
+
+"""
+`findin(t::Tuple, v)` returns the index of `v` in `t`.
+If `t` contains `v` more than once, the first index is returned.
+If `t` does not contain `v`, an error is thrown.
+
+`i = findin(t::Tuple, s::Tuple)` returns, for each element of `s`, the corresponding
+index in `t`, so that `t[i] = s``.
+"""
+function findin(t::NTuple{N,<:Integer}, v) where {N}
+   # Just do a straightforward search.
+   # Using sort to find elements is not advantageous for any reasonably-sized tuple
+   i = static_fn(nothing, Val(N)) do i, i_
+      i !== nothing && return i
+      t[i_] == v && return i_
+      nothing
+   end
+   i === nothing && throw(ArgumentError("v was not found in t"))
+   i
+end
+
+# in principle we could broadcast the scalar version ... ?
+function findin(t::NTuple{N,<:Integer}, s::NTuple{M,Any}) where {N,M}
+   ntuple(Val(M)) do j
+      i = static_fn(nothing, Val(N)) do a, i_
+         a !== nothing && return a
+         t[i_] == s[j] && return i_
+         nothing
+      end
+      i === nothing && throw(ArgumentError("s[$j] was not found in t"))
+      i
+   end
+end
+
+
+# this is the fastest of various methods.  Fast for m<=10, slower for m>10.
+# n = m = 10:  ~25ns
+# n = m = 11:  ~250ns
+# For t large and only partially true, findall is sometimes faster
+function tfindall(t::Tuple{Vararg{Bool}})
+   n = length(t)
+   c = cumsum(t)
+   m = c[end]
+   #ntuple(i->findin(c, i), m)
+   #ntuple(i->findin(c, i), Val(m))
+   #ntuple_(i->findin(c, i), m, Int)
+   #(findall(t)...,)
+   #([i for i in oneto(m)]...,)
+   if m<=10
+      ntuple(i->findin(c, i), m)
+   else
+      tfindall_(t, c, Val(m))
+      #ntuple(i->findin(c, i), Val(m))
+      #tfindall(Val(t))
+      #(findall(t)...,)
+   end
+end
+
+tfindall_(t::Tuple{Vararg{Bool}}, c, ::Val{m}) where m = ntuple(i->findin(c, i), Val(m))
+
+# This works just as well as the complicated version below
+@generated function tfindall(::Val{t}) where {t}
+   i = (findall(t)...,)
+   return :( $i )
+end
+
+
+# function tfindall(::Val{t}) where {t}  # how to restrict t to Tuple{Vararg{Bool}}?
+#    t isa Tuple{Vararg{Bool}} || error("t must be a tuple of Bools")
+#    n = length(t)
+
+#    # version 1 - 0ns
+#    c = cumsum(t)
+#    m = c[end]
+#    ntuple(i->findin(i, c), m)
+
+#    # version 2: - 1.6us
+#    # m = sum(t)
+#    # v = MVector{m,Int}(undef)
+#    # k = 1
+#    # @inbounds for i in 1:n
+#    #    if t[i]
+#    #       v[k] = i
+#    #       k += 1
+#    #    end
+#    # end
+#    # Tuple(v)
+
+#    # version 3: - 40ns
+#    # m = numtrue(t)
+#    # v = Vector{Int}(undef, m)
+#    # k = 1
+#    # @inbounds for i in 1:n
+#    #    if t[i]
+#    #       v[k] = i
+#    #       k += 1
+#    #    end
+#    # end
+#    # ntuple(i->v[i], Val(m))
+
+#    # version 4 - 17us
+#    # m = sum(t)
+#    # v = oneto(m)
+#    # k = 1
+#    # @inbounds for i in 1:n
+#    #    if t[i]
+#    #       v = setindex(v, i, k)
+#    #       k += 1
+#    #    end
+#    # end
+#    # v
 # end
 
 
-function findzero(t::Tuple)
-   r = t   # value doesn't matter, just need something the same size as t
-   ir = 0
-   for i = 1:length(t)
-      if t[i] == 0
-         ir += 1
-         #r[ir] = t[i]
-         r = Base.setindex(r, t[i], ir)
-      end
-   end
-   return r[oneto(ir)]
-   #return Tuple(r)[oneto(ir)]
-
-end
-
-# TODO:  Considuer using _foldoneto, as in accumtuple
-# Using sort to find elements is not advantageous for any reasonably-sized tuple
-"""
-`findin(v, t::NTuple)` returns the index of `v` in `t`.
-If `t` contains `v` more than once, the first index is returned.
-If `t` does not contain `v`, 0 is returned.
-
-`findin(s::NTuple, t::NTuple)` returns, for each element of `s`, the corresponding
-index in `t`.
-"""
-findin(v, t::NTuple) = firsttrue(v .== t)
 
 
 
-"""
-Type-stable variant of `findfirst`.
+#-------------------------------------
+# Sorting
 
-`firsttrue(b)` returns the index of the first true element of `b`, or `firstindex(b)-1` if `b`
-has no true elements.  This method can be significantly faster than `findfirst` when
-the result indexes a tuple or array.
-"""
-@inline function firsttrue(b)
-   i = firstindex(b)
-   @inbounds while i <= lastindex(b)
-      if b[i]
-         return i
-      end
-      i += 1
-   end
-   return firstindex(b) - 1
-end
 
 
 # If the tuple is short, use compiler-inferred merge sort.
@@ -783,6 +738,8 @@ function _sortperm_long(t::Tuple, lt=isless, by=identity, rev::Bool=false)
 end
 
 
+#-------------------------------
+# Set operations
 
 allunique(t::NTuple) = length(t) <= 7 ? _allunique_by_pairs(t) : _allunique_by_sorting(t)
 
@@ -812,6 +769,7 @@ function _allunique_by_sorting(t::NTuple)
    end
    true
 end
+
 
 """
 	(u, i1, i2) = index_union(t1::Tuple, t2::Tuple)
@@ -863,168 +821,6 @@ function indexed_union(t1::NTuple, t2::NTuple)
       #return
    end
 end
-
-# function indexed_union(tups::Vararg{NTuple, M}) where M
-# 	lengths = map(length, tups)
-# 	bigtup = tcat(tups...)
-# 	N = length(bigtup)
-# 	isort = sortperm(bigtup)
-# 	bigsorted = bigtup[isort]
-# 	indS = MVector{Int,N}(undef)
-# 	ind_bs[1] = 1
-# 	for i in 2:N
-# 		if ind_bs[i] > ind_bs[i-1]
-# 			ind_bs[i] = ind_bs[i-1]+1
-# 		else
-# 			ind_bs[i] = ind_bs[i]
-# 		end
-# 	end
-#
-# 	ind_bs = ind_bs[isort]
-# error("unfinished!")
-# end
-
-# # Tuple arithmetic
-# # These appear to be super fast
-# (+)(t::Tuple{}, x::Number) = ()
-# (-)(t::Tuple{}, x::Number) = ()
-# (*)(t::Tuple{}, x::Number) = ()
-#
-# (+)(t::Tuple{Vararg{T,N}}, x::Number) where {T,N} = ntuple(i->t[i]+x, N)
-# (-)(t::Tuple{Vararg{T,N}}, x::Number) where {T,N} = ntuple(i->t[i]-x, N)
-# (*)(t::Tuple{Vararg{T,N}}, x::Number) where {T,N} = ntuple(i->t[i]*x, N)
-#
-# (+)(a::Tuple{Vararg{TA,N}}, b::Tuple{Vararg{TB,N}}) where {TA,TB,N} = ntuple(i->a[i]+b[i], N)
-# (-)(a::Tuple{Vararg{TA,N}}, b::Tuple{Vararg{TB,N}}) where {TA,TB,N} = ntuple(i->a[i]-b[i], N)
-# (*)(a::Tuple{Vararg{TA,N}}, b::Tuple{Vararg{TB,N}}) where {TA,TB,N} = ntuple(i->a[i]*b[i], N)
-
-
-#splittup(t::Tuple, n::Integer) = (t[oneto(n)], t[tupseq(n+1,length(t))])
-
-# These all become slow when not inferred
-# splittup(::Val{0}, t...) = ((), t)
-# splittup(::Val{1}, a, t...) = ((a,), t)
-# splittup(::Val{2}, a1, a2, t...) = ((a1,a2), t)
-# splittup(::Val{3}, a1, a2, a3, t...) = ((a1,a2,a3), t)
-# splittup(::Val{4}, a1, a2, a3, a4, t...) = ((a1,a2,a3,a4), t)
-# splittup(::Val{5}, a1, a2, a3, a4, a5, t...) = ((a1,a2,a3,a4,a5), t)
-# splittup(::Val{6}, a1, a2, a3, a4, a5, a6, t...) = ((a1,a2,a3,a4,a5,a6), t)
-# splittup(::Val{7}, a1, a2, a3, a4, a5, a6, a7, t...) = ((a1,a2,a3,a4,a5,a6,a7), t)
-# splittup(::Val{8}, a1, a2, a3, a4, a5, a6, a7, a8, t...) = ((a1,a2,a3,a4,a5,a6,a7,a8), t)
-# splittup(::Val{9}, a1, a2, a3, a4, a5, a6, a7, a8, a9, t...) = ((a1,a2,a3,a4,a5,a6,a7,a8,a9), t)
-# splittup(::Val{10}, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, t...) = ((a1,a2,a3,a4,a5,a6,a7,a8,a9,a10), t)
-#
-# split_(::Val{N}, a) where {N} = split_(Val(N-1), (a[1],), Base.tail(a))
-# split_(::Val{N}, a, b) where {N} = split_(Val(N-1), (a..., b[1]), Base.tail(b))
-# split_(::Val{0}, a, b) = (a, b)
-
-# """
-# Partition a tuple into two tuples according to a logical mask.
-# `partition_tuple(t, mask) = (a,b)` where `a = a[findall(mask)]` and `b = b[findall(!mask)]`.
-# """
-# partition_tuple(t::Tuple, b::AbstractArray{Bool}) = _partition_tuple(t, b)
-# partition_tuple(t::Tuple, b::Tuple{Vararg{Bool}}) = _partition_tuple(t, b)
-#
-# function _partition_tuple(t::Tuple, b)
-# 	if length(b) == length(t)
-# 		# r1 = MVector{length(t), eltype(t)}(undef)
-# 		# r2 = MVector{length(t), eltype(t)}(undef)
-# 		r1 = t
-# 		r2 = t
-# 		i1 = 0
-# 		i2 = 0
-# 		for it = 1:length(t)
-# 			if b[it]
-# 				i1 += 1
-# 				#r1[i1] = t[it]
-# 				r1 = Base.setindex(r1, t[it], i1)
-# 			else
-# 				i2 += 1
-# 				#r2[i2] = t[it]
-# 				r2 = Base.setindex(r2, t[it], i2)
-# 			end
-# 		end
-# 		return (r1, i1, r2, i2)						# this is the fastest
-# 		#return (r1[oneto(i1)], r2[oneto(i2)])		# this is the slowest
-# 	else
-# 		throw(BoundsError(t, b))
-# 	end
-# end
-#
-# # This function returns a tuple the same size as t, but with the "true" values
-# # up front and the "false" values at the back, and with the index of the number
-# # of "true" values.  This can be used to reconstruct the partition.  It is
-# # slightly less convenient that the function above, but is the fastest of the
-# function __partition_tuple(t::Tuple, b)
-# 	if length(b) == length(t)
-# 		r = t
-# 		i1 = 0
-# 		i2 = length(t)+1
-# 		for it = 1:length(t)
-# 			if b[it]
-# 				i1 += 1
-# 				#r1[i1] = t[it]
-# 				r = Base.setindex(r, t[it], i1)
-# 			else
-# 				i2 -= 1
-# 				#r2[i2] = t[it]
-# 				r = Base.setindex(r, t[it], i2)
-# 			end
-# 		end
-# 		return (r, i1)
-# 		#return (Tuple(r1)[oneto(i1)], Tuple(r2)[oneto(i2)])
-# 	else
-# 		throw(BoundsError(t, b))
-# 	end
-# end
-
-
-
-# # This is slow, because length(b) is not inferrable.
-# # If we pass a compile-time constant for the length, it becomes as fast as getindex_t.
-# function findall(b::AbstractArray{Bool,1})
-# 	r = MVector{length(b), Int64}(undef)
-# 	ir = 0
-# 	for i = 1:length(b)
-# 		if b[i]
-# 			ir += 1
-# 			r[ir] = i
-# 		end
-# 	end
-# 	return Tuple(r)[oneto(ir)]
-# end
-
-# findin1(t::Dims, v::Int64) = findin1(t, (v,))
-# function findin1(t::Dims, s::Tuple{Vararg{Int64,N}}) where {N}
-# 	#tmap = Vector{Int64}(undef, maximum(t))
-# 	tmap = zeros(Int64, maximum(t))
-# 	#tmap = MVector{maximum(t),Int64}(undef) #slow!
-# 	#map(i- tmap[i] = i, t)
-# 	for i in 1:length(t)
-# 		tmap[t[i]] = i
-# 	end
-# 	return map(v->tmap[v], s)
-# end
-
-#findin2(t::Dims, v::Int64) = firstequal(v, t)
-
-
-#findin2(x::Tuple{Vararg{Int64}}, s::Tuple{Vararg{Int64}}) = filter(i->notnothing(i), map(v->findfirst(v .== s), x))
-#
-
-
-# function my_ntuple_rec(f, n::Int64, i::Int64)
-#     if i<n
-#         return (f(i), my_ntuple_rec(f, n, i+1)...)
-#     else
-#         return (f(n),)
-#     end
-# end
-#
-# my_ntuple(f, vn::Type{Val{n}}) where {n} = my_ntuple_rec(f, vn, Val{1})
-# my_ntuple_rec(f, vn::Type{Val{n}}, vi::Type{Val{i}}) where {i,n} = i<n ? (f(i), my_ntuple_rec(f, vn, Val{i+1})...) : f(n)
-
-
 
 
 end
