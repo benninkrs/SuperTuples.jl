@@ -19,10 +19,10 @@ for n = [5,10,15,20,30, 32, 33, 40]
 	
 	#m = ((rand(n) .> 0.5)...,)
 	m = ntuple(i-> (i==n) ? true : false, n)
-	# print("findall(b)           ")
-	# isinferred = @isinferred findall(m)
-	# print(isinferred, "    ")
-	# @btime findall($m)
+	print("tfindall(b)           ")
+	isinferred = @isinferred tfindall(m)
+	print(isinferred, "    ")
+	@btime tfindall($m)
 
 	#  print("findall_(b)           ")
 	# isinferred = @isinferred SuperTuples.findall_(m)
@@ -40,16 +40,16 @@ for n = [5,10,15,20,30, 32, 33, 40]
 	print(isinferred, "    ")
 	@btime getindex($t, $m)
 
- 	print("select(t, m)   ")
-	isinferred = @isinferred SuperTuples.select(t, m)
-	print(isinferred, "    ")
-	@btime SuperTuples.select($t, $m)
+ 	# print("select(t, m)   ")
+	# isinferred = @isinferred SuperTuples.select(t, m)
+	# print(isinferred, "    ")
+	# @btime SuperTuples.select($t, $m)
 
 
-	print("select(t, Val(m))   ")
-	isinferred = @isinferred SuperTuples.select(t, Val(m))
-	print(isinferred, "    ")
-	@btime SuperTuples.select($t, Val($m))
+	# print("select(t, Val(m))   ")
+	# isinferred = @isinferred SuperTuples.select(t, Val(m))
+	# print(isinferred, "    ")
+	# @btime SuperTuples.select($t, Val($m))
 
 end
 

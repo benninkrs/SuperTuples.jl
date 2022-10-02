@@ -1,30 +1,145 @@
 # SuperTuples.jl
 Utilities for working with tuples in Julia
 
-**SuperTuples** provides fast, convenient methods for working with tuples:
+**SuperTuples** provides convenient, performant methods for working with tuples:
 
-* Constructing
-* Splitting and concatenating
-* Indexing via other tuples
-* Permuting
-* Searching
-* Sorting
+* construction from iterated functions and other tuples
+* concatenation
+* indexing via other tuples
+* sorting and permuting
+* searching
 
-Most of the new functionality is achieved by adding methods to standard Base functions (such as `getindex`). Since this constitutes [type piracy](https://docs.julialang.org/en/v1/manual/style-guide/#Avoid-type-piracy-1) there is the possibility that **using SuperTuples may lead to unexpected behavior in unrelated code (including Base)**, though I am not aware of any such behavior.
+Some of the new functionality is achieved by adding methods to standard Base functions (such as `getindex`). Since this constitutes [type piracy](https://docs.julialang.org/en/v1/manual/style-guide/#Avoid-type-piracy-1) there is the possibility that **using SuperTuples may lead to unexpected behavior in unrelated code (including Base)**, though this seems unlikely at present.
 
 SuperTuples provides some similar functionality as, but was developed mostly independently of, [Tuple Tools](https://github.com/Jutho/TupleTools.jl).
 
-# Functions
+# Tuple Construction
 
-## Tuple Construction
+## Constructing Ranges
+```
+oneto(n)
+oneto(Val(n))
+```
+Construct the tuple (1,2,...,n).  When `n` is inferrable or these
+usually lead to faster code than `1:n` or `Base.OneTo(n)`.
 
-## Indexing
 
-## Permuting
+```
+tuplerange(a, b)
+```
+Constructs the tuple `(a, ..., b)` taking steps of size `oneunit(a)`.
 
-## Searching
+### Examples
 
-## Sorting
+```
+julia> oneto(5)
+(1,2,3,4,5)
+
+julia> tuplerange(2,6)
+(2,3,4,5,6)
+
+julia> tuplerange(7.0,3)
+(7.0, 6.0, 5.0, 4.0, 3.0)
+```
+
+
+## Constructing from Functions
+```
+ntuple(f, n::Integer, type)
+ntuple(f, Val(n), type)
+```
+Construct a tuple of known, uniform type from callable object `f`.
+For n≤10 these methods perform the same as the untyped methods in Base;
+but for n>10 they are significantly faster.
+An error results if the output of f cannot be converted to `type`.
+
+
+```
+ntuple_iter(f, x, Val(n))
+```
+Create a tuple by iterating function `f` on the initial value `x`. Here `f` is a function of the form `f(index, value) = nextvalue` and the returned tuple `t` is generated as `t[k] = f(k, t[k-1])` where `t[0] ≡ x`.  
+
+
+```
+ntuple_iter_state(f, s0, Val(n))
+```
+Create a tuple by stateful iteration. In contrast to `ntuple_iter`, the iteration state can be distinct from the value return at each iteration.
+Here `f` is a function of the form `f(index, state) = (value, nextstate)` and the returned tuple `t` is generated as `(t[k], s[k]) = f(k, s[k-1])`.
+
+## Construction from Other Tuples
+SuperTuples provides several functions for constructing tuples by selectively placing elements from other tuples.  As described below, `getindex` can be used to extract tuple elements and `setindex` can be used effectively modify selected elements of a tuple.
+
+A generalization of such functionality is provided by `accumtuple`: 
+```
+accumtuple(vals::Tuple, inds, x0, n::Integer, acc = +)
+accumtuple(vals::Tuple, inds, x0, Val(n), acc = +)
+```
+constructs a tuple of length `n` by accumulating values `vals` at indices `inds`.
+`x0` is the value assigned to elements not indexed by `i`.
+`acc(x, y)` is a binary function used to accumulate values, i.e. for each `i` in `inds`, `t[i] = acc(t[i], v[i])`.
+
+### Examples
+```
+
+```
+
+# Indexing Tuples with Tuples
+Tuples can be indexed by tuples of `Integer`s and tuples of `Bool`s.  This is often more performant than indexing by vectors, ranges, or other iterators since the length (and sometimes even the value) of the resulting tuple is more likely to be inferred.
+
+A caveat is that this functionality constitutes type piracy and is therefore **theoretically unsafe**: it could potentially cause unexpected behavior in unrelated code.  This possibility seems unlikely, however, as it could only occur in the case of external code that either (1) relies on tuples-indexed-by-tuples to be an error, or (2) itself implements tuples-indexed-by-tuples. 
+```
+getindex(t::Tuple, i::Tuple{Vararg{Integer}})
+```
+returns the tuple `(t[i[1]], t[i[2]], ...)`.
+
+```
+getindex(t::Tuple, m::Tuple{Vararg{Bool}})
+```
+returns a tuple whose elements are selected by the `true` elements of `m`.
+
+```
+setindex(t::Tuple, v, i::Dims)
+```
+Construct a tuple by effectively replacing selected elements of `t`.  The result `r` is equivalent to `r = t; r[i] = v`.
+
+```
+deleteat(t::Tuple, inds)
+```
+Construct a tuple by effectively removing selected elements of `t`.
+
+### Examples
+
+
+# Computations on Tuples
+```
+cumsum(t::Tuple)
+cumprod(t::Tuple)
+```
+These methods are faster than the generic implementations in Base.
+
+```
+cumfun(t::Tuple, op)
+```
+Return a tuple `c` generated by applying `op` cumulatively to the elements of `t`.  Specifically, `c[1] = t[1]` and `c[k] = op(c[k-1], t[k])` for k>1.
+
+### Examples
+
+
+# Searching
+Several methods are provided to 
+
+# Sorting and Permutation
+```
+invperm(p::Tuple)
+```
+Return the inverse of a perumtation `p`.
+
+```
+sort(t::Tuple, ...)
+sortperm(t::Tuple, ...)
+```
+Sort a tuple, or return a permutation that sorts a tuple. These are reimplementations of the methods in Base, with better performance.
+
 
 # Under the Hood
 Operations on small tuples (generally of length <10) are typically achieved via explicit formulas and/or compiler-inferrable recursive constructions.  Operations on large `NTuple`s use `MVector`s as temporary fixed-size mutable spaces.
