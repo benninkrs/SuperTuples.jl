@@ -12,6 +12,7 @@ using Base: tail
 import Base: getindex, setindex
 import Base: ntuple, invperm, sort, sortperm, findfirst
 import Base: cumsum, cumprod
+export tail
 
 @warn "Package SuperTuples extends some functions in Base to support tuples.\n
       Theoretically this could result in unexpected behavior of Base or other packages."
@@ -255,13 +256,13 @@ ntuple_iter_state(iterfun, s0, n) = ntuple_iter_state(iterfun, s0, Val(n))
 
 
 # Replaces Base's version.
-# This is much faseter.
+# This is much faster.
 function cumsum(t::Tuple)
    ntuple_iter((i,s) -> s+t[i], zero(eltype(t)), Val(length(t)))
 end
 
 function cumprod(t::Tuple)
-   ntuple_iter((i,s) -> s+t[i], one(eltype(t)), Val(length(t)))
+   ntuple_iter((i,s) -> s*t[i], one(eltype(t)), Val(length(t)))
 end
 
 function cumfun(t::Tuple, op)
