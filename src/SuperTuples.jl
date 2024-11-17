@@ -3,10 +3,10 @@ module SuperTuples
 
 export oneto, tuplerange, accumtuple, cumfun
 export findin, tfindall, tcat #, indexed_union
-export ntuple_iter, ntuple_iter_state
+export ntuple_iter_x, ntuple_iter_ix, ntuple_iter
 # export deleteat
 
-using StaticArrays
+using StaticArraysCore
 using Base: tail
 # import StaticArrays: deleteat
 import Base: getindex, setindex
@@ -154,122 +154,310 @@ end
 
 # Internal Utilities
 
+#=
+Here's a sneaky way to create compiler-inferrable tuples from iterative functions.
+
+Say we have a function f and want to create a tuple t such that t[i] = f(t[i-1]) with t[1] = f(t0).
+Naivley we could achieve this by the following:
+
+function iter_n(f, a, i)
+   for j = 1:i
+      a = f(a)
+   end
+   a
+end
+
+t = ntuple(i -> iter_n(f, t0, i))
+
+But the result of iter_n is not compiler-inferrable, since i is not a compiler constant.
+Hence it will not compile to conise code.
+
+The sneaky approach used in base is to evalute a fixed number of iterations of a wrapper function
+that switches from f to the identity when the desired number of iterations has been reached:
+function iter_n(f, a, i, ::Val{n}) where {n}
+   for j = 1:n
+      j <= i ? a = f(a) : a
+   end
+   a
+end
+
+t = ntuple(i -> iter_n(f, t0, i, Val(n)))
+
+=#
+
+
+
+# static_iter is similar to Base._foldoneto, except it directly incorporates the j<=i condition
+# instead of requiring the caller to do that with an anonymous function.
+
 
 """
-   static_iter(f, x0, Val(n))
-Computes an iterated function statically (by manually unrolling).
+   static_iter_x(f, x0, k, Val(n))
+
+Computes, in a compiler-inferrable way, the result of iterating a function f(x) k times (0 <= k <= N).
+Equivalent to:
+   x1 = f(x0)
+   x2 = f(x1)
+   ...
+   xk = f(x(k-1))
+   return xk
+
+This is mainly used by [`ntuple_iter_x`](@ref) to construct tuples from stateful functions. 
+"""
+@inline function static_iter_x(f, a, i, ::Val{N}) where {N}
+   @assert N::Integer > 0
+   if @generated
+      quote
+         a_0 = a
+         Base.Cartesian.@nexprs $N j -> (j<=i) ? (a_{j} = f(a_{j-1})) : (a_{j} = a_{j-1})
+         return $(Symbol(:a_, N))
+      end
+   else
+      for j = 1:N
+         j <= i ? a = f(a) : a
+      end
+      return a
+   end
+end
+static_iter_x(f, a, i, ::Val{0}) = a
+
+
+
+"""
+   ntuple_iter_x(iterfun::Function, t0, Val(n))
+
+Create a tuple `t` such that `t[i] = f(t[i-1])`, with inital value `t0`.
+See also [`ntuple_iter_ix`](@ref) and [`ntuple_iter_s`](@ref)
+"""
+function ntuple_iter_x(f::F, x0, ::Val{n}) where {F<:Function, n}
+   ntuple(i -> static_iter_x(f, x0, i, Val(n)), Val(n))
+end
+
+
+
+
+"""
+   static_iter_ix(f, x0, k, Val(n))
+Computes, in a compiler-inferrable way, the result of iterating a function f(i,x) k times (0 <= k <= N).
 Equivalent to:
    x1 = f(1, x0)
    x2 = f(2, x1)
    ...
-   xn = f(n, x(n-1))
-   return xn
-Equivalent to Base._foldoneto
+   xk = f(k, x(k-1))
+   return xk
+
+This is mainly used by [`ntuple_iter_ix`](@ref) to construct tuples from stateful functions. 
 """
-@inline function static_iter(op, acc, ::Val{N}) where N
+@inline function static_iter_ix(f, a, i, ::Val{N}) where {N}
    @assert N::Integer > 0
    if @generated
       quote
-         acc_0 = acc
-         Base.Cartesian.@nexprs $N i -> acc_{i} = op(i, acc_{i-1})
-         return $(Symbol(:acc_, N))
+         a_0 = a
+         Base.Cartesian.@nexprs $N j -> (j<=i) ? (a_{j} = f(j, a_{j-1})) : (a_{j} = a_{j-1})
+         return $(Symbol(:a_, N))
       end
    else
-      for i in 1:N
-         acc = op(i, acc)
+      for j = 1:N
+         j <= i ? a = f(j, a) : a
       end
-      return acc
+      return a
    end
 end
-static_iter(op, acc, ::Val{0}) = acc
+static_iter_ix(f, a, i, ::Val{0}) = a
 
 
 """
-   static_iter_state(f, s0, Val(n))
-Computes a stateful iteration statically (by manually unrolling).  Similar to `static_iter`,
-but for cases in which the iteration state is distinct from the value to be returned.
+   ntuple_iter_ix(iterfun::Function, t0, Val(n))
+
+Create a tuple `t` such that `t[i] = f(i, t[i-1])`, with inital value `t0`.
+See also [`ntuple_iter_ix`](@ref) and [`ntuple_iter_s`](@ref)
+"""
+function ntuple_iter_ix(f::F, x0, ::Val{n}) where {F<:Function, n}
+   ntuple(i -> static_iter_ix(f, x0, i, Val(n)), Val(n))
+end
+
+
+
+
+
+"""
+   static_iter(seq, k, Val(n))
+Computes, in a compiler-inferrable way, the `k`th value of iteratable `seq`.
 Equivalent to:
-   (_, s1) = f(1, s0)
-   (_, s2) = f(2, s1)
+   (x1, s1) = iterate(seq)
+   (x2, s2) = iterate(seq, s2)
    ...
-   (v, sn) = f(n, s(n-1))
-   return v
+   (xk, sk) = iterate(seq, s(k-1))
+   return xk
+
+This is mainly used by [`ntuple_iter`](@ref) to construct tuples from iterable (but not indexable) objects. 
 """
-@inline function static_iter_state(op, state, ::Val{N}) where N
+static_iter(seq, i, ::Val{n}) where {n} = static_iter(Base.IteratorSize(seq), seq, i, Val(n))
+
+# Iterable has known length. 
+@inline function static_iter(::Union{Base.HasLength, Base.HasShape}, seq, i, ::Val{N}) where {N}
    @assert N::Integer > 0
+   (i < 1) && throw(BoundsError(seq, i))
+   i = min(i, length(seq))
    if @generated
       quote
-         state_0 = state
-         Base.Cartesian.@nexprs $N i -> (value_{i}, state_{i}) = op(i, state_{i-1})
-         return $(Symbol(:value_, N))
+         (x_1, s_1) = iterate(seq)
+         Base.Cartesian.@nexprs $(N-1) j -> (j+1 <= i) ? (x_{j+1}, s_{j+1}) = iterate(seq, s_{j}) : (x_{j+1}, s_{j+1}) = (x_{j}, s_{j})  
+         return $(Symbol(:x_, N))
       end
    else
-      (value, state) = op(1, state)
-      for i in 2:N
-         (value, state) = op(i, state)
+      (x,s) = iterate(seq)
+      for j = 2:N
+         (j <= i) && ((x,s) = iterate(seq, s))
       end
-      return value
+      return x
    end
 end
 
 
-
-
-"""
-   ntuple_iter(iterfun::Function, x, Val(n))
-
-Create a tuple by iterating function `f` on the initial value `x`.
-Here `f` is a function of the form `f(index, value) = nextvalue`
-and the returned tuple `t` is generated as `t[k] = f(k, t[k-1])`
-where `t[0] ≡ x`.  See also [`ntuple_iter_state`](@ref)
-"""
-function ntuple_iter(iterfun::F, s0, ::Val{n}) where {F<:Function, n}
-   # wrapper function that can be called n times but stops iterating after i iterations
-   f = i -> static_iter(s0, Val(n)) do j,s
-         (j <= i) ? iterfun(j,s) : s   # slower if s is type unstable
+# Iterable has indeterminate length (3x slower)
+@inline function static_iter(::Base.IteratorSize, seq, i, ::Val{N}) where {N}
+   @assert N::Integer > 0
+   (i < 1) && throw(BoundsError(seq, i))
+   if @generated
+      quote
+         r_1 = iterate(seq)
+         isnothing(r_1) || ((x_1, s_1) = r_1)
+         Base.Cartesian.@nexprs $(N-1) j -> (j+1 > i || isnothing(r_{j})) ? (x_{j+1}, s_{j+1}) = (x_{j}, s_{j}) : (r_{j+1} = iterate(seq, s_{j}); isnothing(r_{j+1}) || (x_{j+1}, s_{j+1}) = r_{j+1})
+         return $(Symbol(:x_, N))
       end
-   ntuple(f, Val(n))
+   else
+      r = iterate(seq)
+      isnothing(r) || ((x,s) = r)
+      for j = 2:N
+         (j <= i && !isnothing(r)) && begin
+            r = iterate(seq, s)
+            isnothing(r) || ((x,s) = r)
+         end
+      end
+      return x
+   end
+
 end
 
-ntuple_iter(iterfun, s0, n) = ntuple_iter(iterfun, s0, Val(n))
 
 
 
 """
-   ntuple_iter_state(iterfun::Function, s0, Val(n))
+   ntuple_iter(seq::Iterable)
+   ntuple_iter(seq::Iterable, Val(n))
 
-Create a tuple by stateful iteration. In contrast to [`ntuple_iter`](@ref), 
-the iteration state can be distinct from the value return at each iteration.
-Here `f` is a function of the form `f(index, state) = (value, nextstate)` and
-the returned tuple `t` is generated as `(t[k], s[k]) = f(k, s[k-1])`.
+Create a tuple `t` such that `t[i]` is the `i`th value of iterable `seq`.
+This is primarily useful when `seq` is not indexable.
+
+The second form specifies the output length `n`, which may be shorter or longer than `seq`.
+(For i > length(seq), t[i] = seq[end].)  This form can be much faster than the first when `n` is inferrable.
 """
-function ntuple_iter_state(iterfun::F, s0, ::Val{n}) where {F<:Function, n}
-   # wrapper function that can be called n times but stops iterating after i iterations
-   f = i -> static_iter_state(s0, Val(n)) do j,s
-         (j < i) ? iterfun(j,s) : (iterfun(i,s)[1], s)   # slower if s is type unstable
-      end
-   ntuple(f, Val(n))
+function ntuple_iter(seq, ::Val{n}) where {n}
+   ntuple(i -> static_iter(seq, i, Val(n)), Val(n))
 end
+ntuple_iter(seq) = ntuple_iter(seq, Val(length(seq)))
 
-ntuple_iter_state(iterfun, s0, n) = ntuple_iter_state(iterfun, s0, Val(n))
+
+
+
+# @inline function static_iter(op, acc, ::Val{N}) where N
+#    @assert N::Integer > 0
+#    if @generated
+#       quote
+#          acc_0 = acc
+#          Base.Cartesian.@nexprs $N i -> acc_{i} = op(i, acc_{i-1})
+#          return $(Symbol(:acc_, N))
+#       end
+#    else
+#       for i in 1:N
+#          acc = op(i, acc)
+#       end
+#       return acc
+#    end
+# end
+# 
+# static_iter(op, acc, ::Val{0}) = acc
+# 
+# 
+# 
+# """
+#    static_iter_state(f, s0, Val(n))
+# Computes a stateful iteration statically (by manually unrolling).  Similar to `static_iter`,
+# but for cases in which the iteration state is distinct from the value to be returned.
+# Equivalent to:
+#    (_, s1) = f(1, s0)
+#    (_, s2) = f(2, s1)
+#    ...
+#    (v, sn) = f(n, s(n-1))
+#    return v
+# """
+# @inline function static_iter_state(op, state, ::Val{N}) where N
+#    @assert N::Integer > 0
+#    if @generated
+#       quote
+#          state_0 = state
+#          Base.Cartesian.@nexprs $N i -> (value_{i}, state_{i}) = op(i, state_{i-1})
+#          return $(Symbol(:value_, N))
+#       end
+#    else
+#       (value, state) = op(1, state)
+#       for i in 2:N
+#          (value, state) = op(i, state)
+#       end
+#       return value
+#    end
+# end
+# 
+# 
+# 
+# function ntuple_iter(iterfun::F, s0, ::Val{n}) where {F<:Function, n}
+#    # wrapper function that can be called n times but stops iterating after i iterations
+#    f = i -> static_iter(s0, Val(n)) do j,s
+#          (j <= i) ? iterfun(j,s) : s   # slower if s is type unstable
+#       end
+#    ntuple(f, Val(n))
+# end
+# 
+# ntuple_iter(iterfun, s0, n) = ntuple_iter(iterfun, s0, Val(n))
+# 
+#
+# 
+# """
+#    ntuple_iter_state(iterfun::Function, s0, Val(n))
+#
+# Create a tuple by stateful iteration. In contrast to [`ntuple_iter`](@ref), 
+# the iteration state can be distinct from the value return at each iteration.
+# Here `f` is a function of the form `f(index, state) = (value, nextstate)` and
+# the returned tuple `t` is generated as `(t[k], s[k]) = f(k, s[k-1])`.
+# """
+# function ntuple_iter_state(iterfun::F, s0, ::Val{n}) where {F<:Function, n}
+#    # wrapper function that can be called n times but stops iterating after i iterations
+#    f = i -> static_iter_state(s0, Val(n)) do j,s
+#          (j < i) ? iterfun(j,s) : (iterfun(i,s)[1], s)   # slower if s is type unstable
+#       end
+#    ntuple(f, Val(n))
+# end
+
+# ntuple_iter_state(iterfun, s0, n) = ntuple_iter_state(iterfun, s0, Val(n))
 
 
 
 # Replaces Base's version.
 # This is much faster.
 function cumsum(t::Tuple)
-   ntuple_iter((i,s) -> s+t[i], zero(eltype(t)), Val(length(t)))
+   ntuple_iter_ix((i,s) -> s+t[i], zero(eltype(t)), Val(length(t)))
 end
 
 function cumprod(t::Tuple)
-   ntuple_iter((i,s) -> s*t[i], one(eltype(t)), Val(length(t)))
+   ntuple_iter_ix((i,s) -> s*t[i], one(eltype(t)), Val(length(t)))
 end
 
 function cumfun(t::Tuple, op)
    if length(t) <= 1
       t
    else
-      (t[1], ntuple_iter((i,s) -> op(s, t[i+1]), t[1], Val(length(t)-1))...)
+      (t[1], ntuple_iter_ix((i,s) -> op(s, t[i+1]), t[1], Val(length(t)-1))...)
    end
    #ntuple_iter((i,s) -> (i==1) ? t[i] : op(s, t[i]), nothing, Val(length(t)))
 end
