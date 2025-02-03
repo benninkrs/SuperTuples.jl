@@ -3,28 +3,31 @@ module SuperTuples
 
 export oneto, tuplerange, accumtuple, cumfun
 export findin, tfindall, tcat #, indexed_union
-export ntuple_iter_x, ntuple_iter_ix, ntuple_iter
+export ntuple_iter_f_x, ntuple_iter_f_ix, ntuple_iter_seq
 # export deleteat
 
-using StaticArraysCore
+using StaticArrays
 using Base: tail
 # import StaticArrays: deleteat
 import Base: getindex, setindex
-import Base: ntuple, invperm, sort, sortperm, findfirst
+import Base: ntuple, invperm, sort, sortperm
 import Base: cumsum, cumprod
 export tail
 
-@warn "Package SuperTuples extends some functions in Base to support tuples.\n
+@warn "Package SuperTuples extends some functions in Base to enable new uses of tuples 
+      and to increase the performance of some functions on tuples. 
       Theoretically this could result in unexpected behavior of Base or other packages."
 
 
 
-# faster version when the output type is known
+# Faster version when the output type is known.
 """
-   ntuple(f, n, type)
-Construct a tuple of known, uniform type.  For n≤10 this methods performs the
+   ntuple(f, n, ::Type)
+Construct a tuple with known type. For n≤10 this methods performs the
 same as the untyped method in Base; but for n>10 it is significantly faster.
 An error results if the output of f cannot be converted to `type`.
+
+Note: the type is not used or enforced for n≤10.
 """
 function ntuple(f, n, ::Type{T}) where {T}
    t = n == 0 ? () :
@@ -46,6 +49,7 @@ function ntuple(f, n, ::Type{T}) where {T}
       Tuple(v)
    end
 end
+
 
 """
    ntuple(f, Val(n), type)
@@ -116,7 +120,7 @@ end
 
 Construct the tuple `(1,2,...,n)`.  When `n` is inferrable the constructions above
 usually leads to faster code than `1:n` or `Base.OneTo(n)`.  But when `n` is not inferrable,
-the latter constructions are preferred.
+the latter constructions are more performant.
 """
 oneto(n::T) where {T<:Integer} = ntuple(identity, n, T)
 
@@ -172,6 +176,12 @@ t = ntuple(i -> iter_n(f, t0, i))
 But the result of iter_n is not compiler-inferrable, since i is not a compiler constant.
 Hence it will not compile to conise code.
 
+[EDIT:  In Julia 1.10, it appears that we don't need the "sneaky" approach below.  We can
+define iter_n to take a Val(i) argument and do
+   t = ntuple(i -> iter_n(f, t0, Val(i)))
+and this performs as well as the "sneaky" method below.
+]
+
 The sneaky approach used in base is to evalute a fixed number of iterations of a wrapper function
 that switches from f to the identity when the desired number of iterations has been reached:
 function iter_n(f, a, i, ::Val{n}) where {n}
@@ -183,97 +193,133 @@ end
 
 t = ntuple(i -> iter_n(f, t0, i, Val(n)))
 
+
 =#
 
 
 
-# static_iter is similar to Base._foldoneto, except it directly incorporates the j<=i condition
-# instead of requiring the caller to do that with an anonymous function.
-
-
 """
-   static_iter_x(f, x0, k, Val(n))
+   static_iter_f_x(f, x0, Val(n))
 
-Computes, in a compiler-inferrable way, the result of iterating a function f(x) k times (0 <= k <= N).
+Computes, in a compiler-inferrable way, the result of iterating a function f(x) n times.
 Equivalent to:
    x1 = f(x0)
    x2 = f(x1)
    ...
-   xk = f(x(k-1))
-   return xk
+   xn = f(x(n-1))
+   return xn
 
 This is mainly used by [`ntuple_iter_x`](@ref) to construct tuples from stateful functions. 
 """
-@inline function static_iter_x(f, a, i, ::Val{N}) where {N}
+@inline function static_iter_f_x(f, a, ::Val{N}) where {N}
    @assert N::Integer > 0
    if @generated
       quote
          a_0 = a
-         Base.Cartesian.@nexprs $N j -> (j<=i) ? (a_{j} = f(a_{j-1})) : (a_{j} = a_{j-1})
+         Base.Cartesian.@nexprs $N j -> (a_{j} = f(a_{j-1}))
          return $(Symbol(:a_, N))
       end
    else
       for j = 1:N
-         j <= i ? a = f(a) : a
+         a = f(a)
       end
       return a
    end
 end
-static_iter_x(f, a, i, ::Val{0}) = a
+static_iter_f_x(f, a, ::Val{0}) = a
 
 
 
 """
-   ntuple_iter_x(iterfun::Function, t0, Val(n))
+   ntuple_iter_f_x(f::Function, x0, Val(n))
 
-Create a tuple `t` such that `t[i] = f(t[i-1])`, with inital value `t0`.
+Create a tuple `t` from `n` iterations of a function `f(x)`:
+   t[1] = f(x0)
+   t[2] = f(t[1])
+   ...
+   t[n] = f(t[n-1])
 See also [`ntuple_iter_ix`](@ref) and [`ntuple_iter_s`](@ref)
 """
-function ntuple_iter_x(f::F, x0, ::Val{n}) where {F<:Function, n}
-   ntuple(i -> static_iter_x(f, x0, i, Val(n)), Val(n))
+function ntuple_iter_f_x(f::F, x0, ::Val{n}) where {F<:Function, n}
+   # One could also build the tuple recursively, i.e. (f(x0), ntuple_iter(f, f(x0), n-1)...)
+   # That has the same performance as the "static iter" approach for n<=33,
+   # but is MUCH worse for n>33.
+   ntuple(i -> static_iter_f_x(f, x0, Val(i)), Val(n))
 end
 
 
+# Surprisingly, this ispretty performant (Julia 1.10) but using static_iter is faster for larger n.
+# function ntuple_iter_x_2(f::F, x0, ::Val{n}) where {F<:Function, n}
+#    iter_f = k -> begin
+#          x = x0
+#          for i = 1:k
+#             x = f(x)
+#          end
+#          return x
+#       end 
+#    ntuple(i -> iter_f(i), Val(n))
+# end
+
+
+# function ntuple_iter_f_x(f::F, x0, n) where {F<:Function}
+#    iter_f = k -> begin
+#          x = x0
+#          for i = 1:k
+#             x = f(x)
+#          end
+#          return x
+#       end 
+#    ntuple(i -> iter_f(i), n)
+# end
+
+
+
+
 
 
 """
-   static_iter_ix(f, x0, k, Val(n))
-Computes, in a compiler-inferrable way, the result of iterating a function f(i,x) k times (0 <= k <= N).
+   static_iter_f_ix(f, x0, Val(n))
+Computes, in a compiler-inferrable way, the result of iterating a function f(i,x) n times.
 Equivalent to:
    x1 = f(1, x0)
    x2 = f(2, x1)
    ...
-   xk = f(k, x(k-1))
-   return xk
+   xn = f(n, x(n-1))
+   return xn
 
 This is mainly used by [`ntuple_iter_ix`](@ref) to construct tuples from stateful functions. 
 """
-@inline function static_iter_ix(f, a, i, ::Val{N}) where {N}
+@inline function static_iter_f_ix(f, a, ::Val{N}) where {N}
    @assert N::Integer > 0
    if @generated
       quote
          a_0 = a
-         Base.Cartesian.@nexprs $N j -> (j<=i) ? (a_{j} = f(j, a_{j-1})) : (a_{j} = a_{j-1})
+         Base.Cartesian.@nexprs $N j -> (a_{j} = f(j, a_{j-1}))
          return $(Symbol(:a_, N))
       end
    else
       for j = 1:N
-         j <= i ? a = f(j, a) : a
+         a = f(j, a)
       end
       return a
    end
 end
-static_iter_ix(f, a, i, ::Val{0}) = a
+static_iter_f_ix(f, a, ::Val{0}) = a
 
 
 """
-   ntuple_iter_ix(iterfun::Function, t0, Val(n))
+   ntuple_iter_f_ix(iterfun::Function, x0, n)
+   ntuple_iter_f_ix(iterfun::Function, x0, Val(n))
 
-Create a tuple `t` such that `t[i] = f(i, t[i-1])`, with inital value `t0`.
+Create a tuple `t` from `n` iterations of a function `f`:
+   t[1] = f(1, x0)
+   t[2] = f(2, t[1])
+   ...
+   t[n] = f(n, t[n-1])
 See also [`ntuple_iter_ix`](@ref) and [`ntuple_iter_s`](@ref)
 """
-function ntuple_iter_ix(f::F, x0, ::Val{n}) where {F<:Function, n}
-   ntuple(i -> static_iter_ix(f, x0, i, Val(n)), Val(n))
+function ntuple_iter_f_ix(f::F, x0, ::Val{n}) where {F<:Function, n}
+   ntuple(i -> static_iter_f_ix(f, x0, Val(i)), Val(n))
 end
 
 
@@ -281,183 +327,79 @@ end
 
 
 """
-   static_iter(seq, k, Val(n))
-Computes, in a compiler-inferrable way, the `k`th value of iteratable `seq`.
+   static_iter_seq(seq, n)
+   static_iter_seq(seq, Val(n))
+
+Compute, in a compiler-inferrable way, the `n`th value of iteratable `seq`.
 Equivalent to:
    (x1, s1) = iterate(seq)
    (x2, s2) = iterate(seq, s2)
    ...
-   (xk, sk) = iterate(seq, s(k-1))
-   return xk
+   (xn, sn) = iterate(seq, s(n-1))
+   return xn
 
-This is mainly used by [`ntuple_iter`](@ref) to construct tuples from iterable (but not indexable) objects. 
+This is mainly used by [`ntuple_iter_seq`](@ref) to construct tuples from non-indexable iterators. 
 """
-static_iter(seq, i, ::Val{n}) where {n} = static_iter(Base.IteratorSize(seq), seq, i, Val(n))
-
-# Iterable has known length. 
-@inline function static_iter(::Union{Base.HasLength, Base.HasShape}, seq, i, ::Val{N}) where {N}
+@inline function static_iter_seq(seq, ::Val{N}) where {N} 
    @assert N::Integer > 0
-   (i < 1) && throw(BoundsError(seq, i))
-   i = min(i, length(seq))
+   # Should we do sequence length check here?
+   # The code below will error if N > length(seq)
+   # Instead we would have to do:
+   #  r_1 = iterate(seq)
+  #    isnothing(r_1) || ((x_1, s_1) = r_1)
+  #    ...
    if @generated
       quote
          (x_1, s_1) = iterate(seq)
-         Base.Cartesian.@nexprs $(N-1) j -> (j+1 <= i) ? (x_{j+1}, s_{j+1}) = iterate(seq, s_{j}) : (x_{j+1}, s_{j+1}) = (x_{j}, s_{j})  
+         Base.Cartesian.@nexprs $(N-1) j -> (x_{j+1}, s_{j+1}) = iterate(seq, s_{j})   
          return $(Symbol(:x_, N))
       end
    else
       (x,s) = iterate(seq)
       for j = 2:N
-         (j <= i) && ((x,s) = iterate(seq, s))
+         (x,s) = iterate(seq, s)
       end
       return x
    end
-end
-
-
-# Iterable has indeterminate length (3x slower)
-@inline function static_iter(::Base.IteratorSize, seq, i, ::Val{N}) where {N}
-   @assert N::Integer > 0
-   (i < 1) && throw(BoundsError(seq, i))
-   if @generated
-      quote
-         r_1 = iterate(seq)
-         isnothing(r_1) || ((x_1, s_1) = r_1)
-         Base.Cartesian.@nexprs $(N-1) j -> (j+1 > i || isnothing(r_{j})) ? (x_{j+1}, s_{j+1}) = (x_{j}, s_{j}) : (r_{j+1} = iterate(seq, s_{j}); isnothing(r_{j+1}) || (x_{j+1}, s_{j+1}) = r_{j+1})
-         return $(Symbol(:x_, N))
-      end
-   else
-      r = iterate(seq)
-      isnothing(r) || ((x,s) = r)
-      for j = 2:N
-         (j <= i && !isnothing(r)) && begin
-            r = iterate(seq, s)
-            isnothing(r) || ((x,s) = r)
-         end
-      end
-      return x
-   end
-
 end
 
 
 
 
 """
-   ntuple_iter(seq::Iterable)
-   ntuple_iter(seq::Iterable, Val(n))
+   ntuple_iter_seq(seq::Iterable)
+   ntuple_iter_seq(seq::Iterable, Val(n))
 
 Create a tuple `t` such that `t[i]` is the `i`th value of iterable `seq`.
 This is primarily useful when `seq` is not indexable.
 
 The second form specifies the output length `n`, which may be shorter or longer than `seq`.
-(For i > length(seq), t[i] = seq[end].)  This form can be much faster than the first when `n` is inferrable.
+(For i > length(seq), t[i] = seq[end].)  This form can be much faster than the first when `n`
+is inferrable.
 """
-function ntuple_iter(seq, ::Val{n}) where {n}
-   ntuple(i -> static_iter(seq, i, Val(n)), Val(n))
+function ntuple_iter_seq(seq, ::Val{n}) where {n}
+   ntuple(i -> static_iter_seq(seq, Val(i)), Val(n))
 end
-ntuple_iter(seq) = ntuple_iter(seq, Val(length(seq)))
+ntuple_iter_seq(seq) = ntuple_iter_seq(seq, Val(length(seq)))
 
-
-
-
-# @inline function static_iter(op, acc, ::Val{N}) where N
-#    @assert N::Integer > 0
-#    if @generated
-#       quote
-#          acc_0 = acc
-#          Base.Cartesian.@nexprs $N i -> acc_{i} = op(i, acc_{i-1})
-#          return $(Symbol(:acc_, N))
-#       end
-#    else
-#       for i in 1:N
-#          acc = op(i, acc)
-#       end
-#       return acc
-#    end
-# end
-# 
-# static_iter(op, acc, ::Val{0}) = acc
-# 
-# 
-# 
-# """
-#    static_iter_state(f, s0, Val(n))
-# Computes a stateful iteration statically (by manually unrolling).  Similar to `static_iter`,
-# but for cases in which the iteration state is distinct from the value to be returned.
-# Equivalent to:
-#    (_, s1) = f(1, s0)
-#    (_, s2) = f(2, s1)
-#    ...
-#    (v, sn) = f(n, s(n-1))
-#    return v
-# """
-# @inline function static_iter_state(op, state, ::Val{N}) where N
-#    @assert N::Integer > 0
-#    if @generated
-#       quote
-#          state_0 = state
-#          Base.Cartesian.@nexprs $N i -> (value_{i}, state_{i}) = op(i, state_{i-1})
-#          return $(Symbol(:value_, N))
-#       end
-#    else
-#       (value, state) = op(1, state)
-#       for i in 2:N
-#          (value, state) = op(i, state)
-#       end
-#       return value
-#    end
-# end
-# 
-# 
-# 
-# function ntuple_iter(iterfun::F, s0, ::Val{n}) where {F<:Function, n}
-#    # wrapper function that can be called n times but stops iterating after i iterations
-#    f = i -> static_iter(s0, Val(n)) do j,s
-#          (j <= i) ? iterfun(j,s) : s   # slower if s is type unstable
-#       end
-#    ntuple(f, Val(n))
-# end
-# 
-# ntuple_iter(iterfun, s0, n) = ntuple_iter(iterfun, s0, Val(n))
-# 
-#
-# 
-# """
-#    ntuple_iter_state(iterfun::Function, s0, Val(n))
-#
-# Create a tuple by stateful iteration. In contrast to [`ntuple_iter`](@ref), 
-# the iteration state can be distinct from the value return at each iteration.
-# Here `f` is a function of the form `f(index, state) = (value, nextstate)` and
-# the returned tuple `t` is generated as `(t[k], s[k]) = f(k, s[k-1])`.
-# """
-# function ntuple_iter_state(iterfun::F, s0, ::Val{n}) where {F<:Function, n}
-#    # wrapper function that can be called n times but stops iterating after i iterations
-#    f = i -> static_iter_state(s0, Val(n)) do j,s
-#          (j < i) ? iterfun(j,s) : (iterfun(i,s)[1], s)   # slower if s is type unstable
-#       end
-#    ntuple(f, Val(n))
-# end
-
-# ntuple_iter_state(iterfun, s0, n) = ntuple_iter_state(iterfun, s0, Val(n))
 
 
 
 # Replaces Base's version.
 # This is much faster.
 function cumsum(t::Tuple)
-   ntuple_iter_ix((i,s) -> s+t[i], zero(eltype(t)), Val(length(t)))
+   ntuple_iter_f_ix((i,s) -> s+t[i], zero(eltype(t)), Val(length(t)))
 end
 
 function cumprod(t::Tuple)
-   ntuple_iter_ix((i,s) -> s*t[i], one(eltype(t)), Val(length(t)))
+   ntuple_iter_f_ix((i,s) -> s*t[i], one(eltype(t)), Val(length(t)))
 end
 
 function cumfun(t::Tuple, op)
    if length(t) <= 1
       t
    else
-      (t[1], ntuple_iter_ix((i,s) -> op(s, t[i+1]), t[1], Val(length(t)-1))...)
+      (t[1], ntuple_iter_f_ix((i,s) -> op(s, t[i+1]), t[1], Val(length(t)-1))...)
    end
    #ntuple_iter((i,s) -> (i==1) ? t[i] : op(s, t[i]), nothing, Val(length(t)))
 end
@@ -506,6 +448,7 @@ function getindex_(t::Tuple, b::Tuple{Vararg{Bool}})
    ntuple(i->t[findin(c, i)], m)
 end
 
+
 # Base has setindex(tuple, value, index), but not setindex(tuple, values, tuple)
 """
 	setindex(t::Tuple, v, i::Dims)
@@ -516,10 +459,10 @@ See also  ['accumtuple'](@ref) and [`invpermute`](@ref).
 @inline function setindex(t::Tuple, v, idx::Dims)
    N = length(t)
    M = length(idx)
-   @boundscheck all(1 <= i <= N for i in idx) || throw(BoundsError(t, idx[j]))
+   @boundscheck all(1 <= i <= N for i in idx) || throw(BoundsError(t, idx))
    if N <= 32
       return ntuple(Val(N)) do i
-         @inbounds static_iter(t[i], Val(M)) do j, a
+         @inbounds static_iter_f_ix(t[i], Val(M)) do j, a
             idx[j] == i ? v[j] : a
          end
       end
@@ -557,7 +500,7 @@ end
 # This is kind of slow, compared to, say, Base.invperm.  Why?
 function accumtuple_short(v::NTuple{M}, idx::Dims{M}, x0, ::Val{N}, op) where {M,N}
    @inbounds ntuple(Val(N)) do i
-      static_iter(x0, Val(M)) do j, a
+      static_iter_f_ix(x0, Val(M)) do j, a
          idx[j] == i ? op(a, v[j]) : a
       end
    end
@@ -595,7 +538,7 @@ function invperm(p::Tuple{Vararg{<:Integer,N}}) where {N}
    if N <= 20
       #return accumtuple(oneto(Val(N)), p, 0, Val(N), (x,y) -> x==0 ? y : 0)
       ntuple(Val(N)) do i
-         s = static_iter(nothing, Val(N)) do j, s
+         s = static_iter_f_ix(nothing, Val(N)) do j, s
             s !== nothing && return s
             @inbounds p[j] == i && return j
             nothing
@@ -686,16 +629,15 @@ end
 # end
 
 
+# Base already has a fast implementation.  No need to implement our own.
+# function findfirst(b::Tuple{Vararg{Bool}})
+#    N = length(b)
+#    return static_iter_f_ix(nothing, Val(N)) do i,j
+#       # i indexes b.  j is the matched index (or nothing)
+#       (isnothing(j) && b[i]) ? i : j 
+#    end
+# end
 
-# Compiler-inferrable version for tuples
-function findfirst(::Val{b}) where {b}
-   N = length(b)
-   static_iter(nothing, Val(N)) do j, i
-      i !== nothing && return i
-      b[j] && return j
-      nothing
-   end
-end
 
 
 
@@ -710,59 +652,74 @@ index in `t`, so that `t[i] = s``.
 function findin(t::NTuple{N,<:Integer}, v) where {N}
    # Just do a straightforward search.
    # Using sort to find elements is not advantageous for any reasonably-sized tuple
-   i = static_iter(nothing, Val(N)) do i_, i
-      i !== nothing && return i
-      t[i_] == v && return i_
-      nothing
+
+   # The obtuse code below implements the following:
+   #
+   # j = nothing
+   # for i = 1:N
+   #  t[i] == v && j = i
+   # end
+   #
+   # ... but does it in such a way that the compiler unrolls the loop,
+   # which results in much faster (?) run-time performance.
+
+   j = static_iter_f_ix(nothing, Val(N)) do i,j
+      # i indexes t.  j is the matched index (or nothing)
+      (isnothing(j) && t[i] == v) ? i : j 
    end
-   i === nothing && throw(ArgumentError("v was not found in t"))
-   i
+
+   j === nothing && throw(ArgumentError("v was not found in t"))
+   j
 end
 
 # in principle we could broadcast the scalar version ... ?
-function findin(t::NTuple{N,<:Integer}, s::NTuple{M,Any}) where {N,M}
-   ntuple(Val(M)) do j
-      i = static_iter(nothing, Val(N)) do i_, a
-         a !== nothing && return a
-         t[i_] == s[j] && return i_
-         nothing
+function findin(t::NTuple{N,<:Integer}, v::NTuple{M,Any}) where {N,M}
+   ntuple(Val(M)) do k
+      j = static_iter_f_ix(nothing, Val(N)) do i,j
+         # i indexes t.  j is the matched index (or nothing)
+         (isnothing(j) && t[i] == v[k]) ? i : j 
       end
-      i === nothing && throw(ArgumentError("s[$j] was not found in t"))
-      i
-   end
+      j === nothing && throw(ArgumentError("v was not found in t"))
+      j
+      end
 end
 
 
-# this is the fastest of various methods.  Fast for m<=10, slower for m>10.
+# Fast for m<=10, much slower for m>10.
 # n = m = 10:  ~25ns
 # n = m = 11:  ~250ns
-# For t large and only partially true, findall is sometimes faster
+# TODO:  Is it possible to do better?
+"""
+   tfindall(t::Tuple{Vararg{Bool}})
+
+Return a tuple containing the indices, in order, of all `true` elements of Bool tuple `t`.
+"""
 function tfindall(t::Tuple{Vararg{Bool}})
    n = length(t)
    c = cumsum(t)
-   m = c[end]
-   #ntuple(i->findin(c, i), m)
-   #ntuple(i->findin(c, i), Val(m))
-   #ntuple_(i->findin(c, i), m, Int)
-   #(findall(t)...,)
-   #([i for i in oneto(m)]...,)
+   m = c[end]        # total number of true elements
    if m<=10
       ntuple(i->findin(c, i), m)
    else
-      tfindall_(t, c, Val(m))
-      #ntuple(i->findin(c, i), Val(m))
-      #tfindall(Val(t))
-      #(findall(t)...,)
+   #    ntuple(i->findin(c, i), Val(m))
+      (findall(t)...,)
    end
 end
 
-tfindall_(t::Tuple{Vararg{Bool}}, c, ::Val{m}) where m = ntuple(i->findin(c, i), Val(m))
+
+# function tfindall_(t::Tuple{Vararg{Bool}})
+#    # c = cumsum(t)
+#    # m = c[end]        # total number of true elements
+#    # ntuple(i->findin(c, i), Val(m))
+#    (findall(t)...,)
+# end
+
 
 # This works just as well as the complicated version below
-@generated function tfindall(::Val{t}) where {t}
-   i = (findall(t)...,)
-   return :( $i )
-end
+# @generated function tfindall(::Val{t}) where {t}
+#    i = (findall(t)...,)
+#    return :( $i )
+# end
 
 
 

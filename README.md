@@ -66,14 +66,14 @@ An error results if the output of f cannot be converted to `type`.
 
 
 ```
-ntuple_iter_x(f, x0, Val(n))
+ntuple_iter_f_x(f, x0, Val(n))
 ```
 Construct a tuple by iterating function `f(x)` on the initial value `x0`. The resulting tuple
 `t` has `t[i] = f(t[i-1])` where `t[0] ≡ x0`.  
 
 
 ```
-ntuple_iter_ix(f, x0, Val(n))
+ntuple_iter_f_ix(f, x0, Val(n))
 ```
 Construct a tuple by iterating function `f(i,x)` on the initial value `x0`. The resulting
 tuple `t` has `t[i] = f(i, t[i-1])` where `t[0] ≡ x0`.  
@@ -81,8 +81,8 @@ tuple `t` has `t[i] = f(i, t[i-1])` where `t[0] ≡ x0`.
 
 
 ```
-ntuple_iter(seq)
-ntuple_iter(seq, Val(n))
+ntuple_iter_seq(seq)
+ntuple_iter_seq(seq, Val(n))
 ```
 Create a tuple from iterable object `seq`. The result is a tuple `t` such that `t[i]` is the `i`th value of `seq`. This is primarily useful when `seq` is not indexable.
 
@@ -167,6 +167,25 @@ sort(t::Tuple, ...)
 sortperm(t::Tuple, ...)
 ```
 Sort a tuple, or return a permutation that sorts a tuple. These are reimplementations of the methods in Base, with better performance.
+
+
+# Type Pirated Methods
+
+This package introduces the following methods which constitute type piracy:
+
+| Method | Effect |
+| --- | --- |
+| `ntuple(f, n, ::Type)` | new behavior |
+| `ntuple(f, Val(n), ::Type)` | new behavior |
+| `getindex(::Tuple, ::NTuple{N,Int})` | new behavior |
+| `getindex(::Tuple, ::NTuple{N,Bool})` | new behavior |
+| `setindex(::Tuple, v, ::NTuple{N,Int})` | new behavior |
+| `invperm(::Tuple)` | improved performance |
+| `sort(::Tuple)` | improved performance |
+| `sortperm(::Tuple)` | improved performance |
+| `findfirst(::Tuple)` | improved performance |
+| `cumsum(::Tuple)` | improved performance |
+| `cumprod(::Tuple)` | improved performance |
 
 
 # Under the Hood
