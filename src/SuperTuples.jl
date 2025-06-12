@@ -395,6 +395,11 @@ function cumprod(t::Tuple)
    ntuple_iter_f_ix((i,s) -> s*t[i], one(eltype(t)), Val(length(t)))
 end
 
+"""
+   cumfun(t, op)
+
+Like cumsum or cumprod, but accumulating values using binary operation `op`.
+"""
 function cumfun(t::Tuple, op)
    if length(t) <= 1
       t
@@ -483,7 +488,7 @@ accumtuple(vals::Tuple, inds, x0, n::Integer, acc = +)
 
 Construct a tuple of length `n` by accumulating values `v` at indices `i`.
 `x0` is the value assigned to elements not indexed by `i`.
-`accumfun(x, y)` is a binary function used to accumulate values.
+`acc` is the accumulation function:  t[i] ⟵ acc(t[i], v).
 
 See also  ['setindex'](@ref).
 """
@@ -533,7 +538,7 @@ end
 
 
 # Base has an implementation of invperm(::Tuple) which falls back to invperm(::Vector) for n>=16.
-# This version uses the Base code for N<=20, and a significantly faster method for n>=20.
+# This version is essentailly the same as the Base code for N<=20, and a significantly faster method for n>=20.
 function invperm(p::Tuple{Vararg{<:Integer,N}}) where {N}
    if N <= 20
       #return accumtuple(oneto(Val(N)), p, 0, Val(N), (x,y) -> x==0 ? y : 0)
