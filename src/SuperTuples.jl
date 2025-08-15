@@ -133,12 +133,13 @@ oneto(::Val{N}) where {N} = (oneto(Val(N - 1))..., N)
 
 """
    tuplerange(a::Integer, b::Integer)
-Construct the tuple `(a, ..., b)` taking steps of size ±oneunit(a).
+
+Construct tuple((a:b)...) directly, without constructing the intermediate range.
 """
-function tuplerange(a::Ta, b::Tb) where {Ta,Tb}
-   T = promote_type(Ta, Tb)
-   s = (b >= a) ? oneunit(T) : -oneunit(T)
-   ntuple(i -> a + (i-1)*s, abs(b-a)+1, T)
+function tuplerange(a::Integer, b::Integer)
+   T = promote_type(typeof(a), typeof(b))
+   len = max(0, b-a+oneunit(T))
+   ntuple(i -> (a-oneunit(T)) + i, len, T)
 end
 
 
