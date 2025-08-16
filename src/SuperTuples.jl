@@ -423,9 +423,10 @@ getindex(t::Tuple, i::Tuple{Integer,Integer,Integer,Integer}) = (t[i[1]], t[i[2]
 getindex(t::Tuple, inds::Tuple{Vararg{Integer}}) = ntuple(i -> t[inds[i]], Val(length(inds)))
 # getindex(t::Tuple, inds::Tuple{Vararg{Integer}}) = map(i->t[i], inds)
 
-# A faster version for large uniformly-typed tuples
-const ManyIntegers = Tuple{Integer,Integer,Integer,Integer,Integer,
-   Integer,Integer,Integer,Integer,Vararg{Integer}}
+const ManyIntegers = Tuple{Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Vararg{Integer}}
+const ManyBool = Tuple{Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Vararg{Bool}}
+
+# A faster version for large uniformly-typed input
 function getindex(t::Tuple{Vararg{T}}, inds::ManyIntegers) where {T}
    all(1 <= i <= length(t) for i in inds) || throw(BoundsError(t, inds))
    N = length(inds)
@@ -438,21 +439,24 @@ end
 
 
 # Logical indexing of tuples
-# We have to have to separate methods to take precedence over specific methods in Base.
-getindex(t::Tuple, b::Tuple{Vararg{Bool}}) = getindex_(t, b)
-const ManyBool = Tuple{Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Vararg{Bool}}
-getindex(t::Tuple{Vararg{T}}, b::ManyBool) where {T} = getindex_(t, b)
+# We have to have to separate methods to prevent ambiguity
+@inline getindex(t::Tuple, b::Tuple{Vararg{Bool}}) = getindex(t, tfindall(b))
+@inline getindex(t::Tuple, b::ManyBool) = getindex(t, tfindall(b))
+@inline getindex(t::Tuple{Vararg{T}}, ::Tuple{}) where {T} = ()
+@inline getindex(t::Tuple{Vararg{T}}, b::Tuple{Vararg{Bool}}) where {T} = getindex(t, tfindall(b))
+# @inline getindex(t::Tuple{Vararg{T}}, b::ManyBool) where {T} = getindex(t, tfindall(b))
+@inline getindex(t::Tuple{Vararg{T}}, b::ManyBool) where {T} = getindex_(t, b)
 
-
-function getindex_(t::Tuple, b::Tuple{Vararg{Bool}})
-   # length(b) == length(t) ? getindex(t, tfindall(b)) : throw(BoundsError(t, b))
+# [v1.10] Somehow const prop works better this way
+function getindex_(t::Tuple{Vararg{T}}, b::Tuple{Vararg{Bool}}) where {T}
+   # (copied from tfindall)
    length(b) == length(t) || throw(BoundsError(t, b))
-   # replicating the code from tfindall here makes it faster
    n = length(t)
    c = cumsum(b)
    m = c[end]
-   ntuple(i->t[findin(c, i)], m)
+   ntuple(i -> t[findin(c, i)], m, T)
 end
+
 
 
 # Base has setindex(tuple, value, index), but not setindex(tuple, values, tuple)
@@ -707,8 +711,9 @@ function tfindall(t::Tuple{Vararg{Bool}})
    if m<=10
       ntuple(i->findin(c, i), m)
    else
+      ntuple(i->findin(c, i), m, Int)
    #    ntuple(i->findin(c, i), Val(m))
-      (findall(t)...,)
+      # (findall(t)...,)
    end
 end
 
