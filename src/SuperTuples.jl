@@ -1,7 +1,7 @@
 # Additions/extensions to Julia that I (RSB) like
 module SuperTuples
 
-export oneto, tuplerange, accumtuple, cumfun
+export oneto, tuplerange, setindex, accumtuple, cumfun
 export findin, tfindall, tcat #, indexed_union
 export ntuple_iter_f_x, ntuple_iter_f_ix, ntuple_iter_seq
 # export deleteat
@@ -654,7 +654,7 @@ end
 """
 `findin(t::Tuple, v)` returns the index of `v` in `t`.
 If `t` contains `v` more than once, the first index is returned.
-If `t` does not contain `v`, an error is thrown.
+If `t` does not contain `v`, `an error is thrown`.
 
 `i = findin(t::Tuple, s::Tuple)` returns, for each element of `s`, the corresponding
 index in `t`, so that `t[i] = s``.
@@ -678,6 +678,8 @@ function findin(t::NTuple{N,<:Integer}, v) where {N}
       (isnothing(j) && t[i] == v) ? i : j 
    end
 
+	# If we allow nothing to be returned, the result is type unstable
+	# and functions like tfindall become much slower.
    j === nothing && throw(ArgumentError("v was not found in t"))
    j
 end
@@ -689,6 +691,9 @@ function findin(t::NTuple{N,<:Integer}, v::NTuple{M,Any}) where {N,M}
          # i indexes t.  j is the matched index (or nothing)
          (isnothing(j) && t[i] == v[k]) ? i : j 
       end
+
+		# If we allow nothing to be returned, the result is type unstable
+		# and functions like tfindall become much slower.
       j === nothing && throw(ArgumentError("v was not found in t"))
       j
       end
@@ -696,13 +701,27 @@ end
 
 
 # Fast for m<=10, much slower for m>10.
-# n = m = 10:  ~25ns
-# n = m = 11:  ~250ns
+# If the result will have more than 10 elements
+# Non-const propagated:
+#	n = m = 10:  ~25 ns
+# 	n = m = 11:  115 ns
+# 	n = m = 20:  4.6 μs
+# Const-propagatd:
+#	n = m = 10:  ~8 ns
+# 	n = m = 11:  90 ns
+#	n = m = 20:	4.6 μs
 # TODO:  Is it possible to do better?
+# - Dispatching on Val(sum(t)) is slower.
+# - Recursive tuple construction is even slower.
+# Probably not possible to do better, since oneto(n) with n=11 takes essentially
+# the same time.  That is, the slowdown is not findin() but simply the fact
+# that the length (and hence type) of the result is not inferrable.
 """
    tfindall(t::Tuple{Vararg{Bool}})
 
-Return a tuple containing the indices, in order, of all `true` elements of Bool tuple `t`.
+Return a tuple containing the indices, in order, of all `true` elements of `t`.
+(In contrast `findall` returns a `Vector`.) `tfindall` is much faster when
+the number of returned elements is <=10; otherwise `findall` is much faster.
 """
 function tfindall(t::Tuple{Vararg{Bool}})
    n = length(t)
@@ -711,27 +730,9 @@ function tfindall(t::Tuple{Vararg{Bool}})
    if m<=10
       ntuple(i->findin(c, i), m)
    else
-      ntuple(i->findin(c, i), m, Int)
-   #    ntuple(i->findin(c, i), Val(m))
-      # (findall(t)...,)
+      ntuple(i->findin(c, i), Val(m))
    end
 end
-
-
-# function tfindall_(t::Tuple{Vararg{Bool}})
-#    # c = cumsum(t)
-#    # m = c[end]        # total number of true elements
-#    # ntuple(i->findin(c, i), Val(m))
-#    (findall(t)...,)
-# end
-
-
-# This works just as well as the complicated version below
-# @generated function tfindall(::Val{t}) where {t}
-#    i = (findall(t)...,)
-#    return :( $i )
-# end
-
 
 
 
