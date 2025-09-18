@@ -654,7 +654,7 @@ end
 """
 `findin(t::Tuple, v)` returns the index of `v` in `t`.
 If `t` contains `v` more than once, the first index is returned.
-If `t` does not contain `v`, `an error is thrown`.
+If `t` does not contain `v`, an error is thrown.
 
 `i = findin(t::Tuple, s::Tuple)` returns, for each element of `s`, the corresponding
 index in `t`, so that `t[i] = s``.
